@@ -13,7 +13,7 @@ import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * AutoClickService: Core AccessibilityService to perform gestures (dispatchGesture)
- * without requiring root permissions.
+ * with robust coordinate handling and touch event injection for all games & apps.
  */
 class AutoClickService : AccessibilityService() {
 
@@ -65,8 +65,13 @@ class AutoClickService : AccessibilityService() {
             return false
         }
 
+        val cleanX = x.coerceAtLeast(0f)
+        val cleanY = y.coerceAtLeast(0f)
+
+        // Using moveTo + lineTo to ensure touch DOWN & UP are properly triggered by Linux input driver
         val clickPath = Path().apply {
-            moveTo(x.coerceAtLeast(0f), y.coerceAtLeast(0f))
+            moveTo(cleanX, cleanY)
+            lineTo(cleanX, cleanY)
         }
 
         val stroke = GestureDescription.StrokeDescription(
@@ -87,6 +92,7 @@ class AutoClickService : AccessibilityService() {
 
             override fun onCancelled(gestureDescription: GestureDescription?) {
                 super.onCancelled(gestureDescription)
+                Log.w(TAG, "Click gesture cancelled at ($cleanX, $cleanY)")
                 onComplete?.invoke(false)
             }
         }, null)
@@ -109,8 +115,8 @@ class AutoClickService : AccessibilityService() {
         }
 
         val swipePath = Path().apply {
-            moveTo(startX, startY)
-            lineTo(endX, endY)
+            moveTo(startX.coerceAtLeast(0f), startY.coerceAtLeast(0f))
+            lineTo(endX.coerceAtLeast(0f), endY.coerceAtLeast(0f))
         }
 
         val stroke = GestureDescription.StrokeDescription(
