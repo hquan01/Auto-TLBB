@@ -1,0 +1,85 @@
+name: Auto Build & Release APK
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Android APK & Publish Release
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Grant Execute Permission for Gradlew
+        run: chmod +x gradlew || true
+
+      - name: Build Debug APK with Gradle
+        run: |
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Extract Version Info
+        id: version_step
+        run: |
+          BUILD_NUM=${{ github.run_number }}
+          VERSION_CODE=$((100 + BUILD_NUM))
+          VERSION_NAME="1.0.${BUILD_NUM}"
+          echo "VERSION_CODE=$VERSION_CODE" >> $GITHUB_OUTPUT
+          echo "VERSION_NAME=$VERSION_NAME" >> $GITHUB_OUTPUT
+          echo "TAG_NAME=v1.0.${BUILD_NUM}" >> $GITHUB_OUTPUT
+
+      - name: Prepare APK File
+        run: |
+          mkdir -p release_apk
+          cp app/build/outputs/apk/debug/app-debug.apk release_apk/Auto-TLBB.apk
+
+      - name: Generate Auto version.json
+        run: |
+          TAG="${{ steps.version_step.outputs.TAG_NAME }}"
+          CODE="${{ steps.version_step.outputs.VERSION_CODE }}"
+          NAME="${{ steps.version_step.outputs.VERSION_NAME }}"
+          DATE=$(date +'%Y-%m-%d')
+          
+          cat <<EOF > version.json
+          {
+            "versionCode": $CODE,
+            "versionName": "$NAME",
+            "apkUrl": "https://github.com/${{ github.repository }}/releases/download/$TAG/Auto-TLBB.apk",
+            "releaseNotes": "• Tự động build từ commit: ${{ github.event.head_commit.message }}\n• Tối ưu cảm ứng xuyên thấu và chạy theo lượt cho game TLBB",
+            "fileSize": "12.0 MB",
+            "publishDate": "$DATE"
+          }
+          EOF
+
+      - name: Create GitHub Release & Upload APK
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version_step.outputs.TAG_NAME }}
+          name: "Auto-TLBB Release ${{ steps.version_step.outputs.VERSION_NAME }}"
+          body: |
+            ## 🚀 Tự động cập nhật phiên bản mới ${{ steps.version_step.outputs.VERSION_NAME }}
+            - **Commit:** ${{ github.event.head_commit.message }}
+            - **Thời gian build:** ${{ steps.version_step.outputs.DATE }}
+            - **Tải file APK trực tiếp bên dưới:**
+          files: |
+            release_apk/Auto-TLBB.apk
+            version.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
