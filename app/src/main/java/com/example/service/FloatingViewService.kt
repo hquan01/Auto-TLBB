@@ -16,22 +16,25 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.text.InputType
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.view.animation.AlphaAnimation
+import android.widget.EditText
 import android.widget.FrameLayout
-import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import com.example.MainActivity
 import com.example.R
-import com.example.data.ClickConfig
-import com.example.data.ClickMode
+import com.example.data.AutoClickScript
+import com.example.data.ScriptPoint
+import com.example.data.ScriptRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -45,8 +48,9 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
- * FloatingViewService: Displays a draggable floating overlay menu (SYSTEM_ALERT_WINDOW)
- * over any game or app with start/pause, target pointer management, and auto-click runner.
+ * FloatingViewService: Draggable floating overlay menu over any game or app.
+ * Executes custom Auto Click scripts with individual point delays, touch duration,
+ * loop repeats, loop delays, stop timer, and in-game floating configuration editors.
  */
 class FloatingViewService : Service() {
 
@@ -54,6 +58,7 @@ class FloatingViewService : Service() {
     private var clickJob: Job? = null
 
     private lateinit var windowManager: WindowManager
+    private lateinit var scriptRepository: ScriptRepository
 
     // Floating Toolbar View
     private var floatingToolbar: View? = null
@@ -62,17 +67,17 @@ class FloatingViewService : Service() {
     // Target pointers list
     private val targetViews = mutableListOf<TargetPointerHolder>()
 
-    private var isPlaying = false
-    private var isMinimized = false
-    private var clickCount = 0L
+    // Dialog Views
+    private var pointEditorDialog: View? = null
+    private var scriptPickerDialog: View? = null
+    private var loopSettingsDialog: View? = null
 
-    // Active Config
-    private var config = ClickConfig(
-        mode = ClickMode.SINGLE_POINT,
-        intervalMs = 100L,
-        clickDurationMs = 40L,
-        repeatCount = 0
-    )
+    private var isPlaying = false
+    private var clickCount = 0L
+    private var currentLoopCount = 0
+
+    // Active Running Script
+    private var activeScript: AutoClickScript = AutoClickScript.getDefaultPresets().first()
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -81,29 +86,23 @@ class FloatingViewService : Service() {
     override fun onCreate() {
         super.onCreate()
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        startForegroundServiceNotification()
+        scriptRepository = ScriptRepository.getInstance(this)
+        activeScript = scriptRepository.getActiveScript()
 
+        startForegroundServiceNotification()
         _isOverlayActive.value = true
 
         setupFloatingToolbar()
-        // Add initial target pointer #1
-        addTargetPointer()
+        loadScriptPointsToScreen(activeScript)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        intent?.let {
-            val interval = it.getLongExtra(EXTRA_INTERVAL_MS, config.intervalMs)
-            val duration = it.getLongExtra(EXTRA_DURATION_MS, config.clickDurationMs)
-            val repeat = it.getIntExtra(EXTRA_REPEAT_COUNT, config.repeatCount)
-            val modeName = it.getStringExtra(EXTRA_MODE)
-            val mode = if (modeName == ClickMode.MULTI_POINT.name) ClickMode.MULTI_POINT else ClickMode.SINGLE_POINT
-
-            config = config.copy(
-                intervalMs = interval,
-                clickDurationMs = duration,
-                repeatCount = repeat,
-                mode = mode
-            )
+        intent?.getStringExtra(EXTRA_SCRIPT_ID)?.let { scriptId ->
+            val script = scriptRepository.scriptsFlow.value.find { it.id == scriptId }
+            if (script != null) {
+                activeScript = script
+                loadScriptPointsToScreen(activeScript)
+            }
         }
         return START_STICKY
     }
@@ -133,8 +132,8 @@ class FloatingViewService : Service() {
         )
 
         val notification: Notification = NotificationCompat.Builder(this, channelId)
-            .setContentTitle("Auto Clicker đang hoạt động")
-            .setContentText("Bảng điều khiển nổi đang hiển thị đè lên màn hình")
+            .setContentTitle("Auto Clicker: ${activeScript.name}")
+            .setContentText("Bảng điều khiển nổi đang sẵn sàng trên màn hình")
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
@@ -145,7 +144,7 @@ class FloatingViewService : Service() {
     }
 
     // ==========================================
-    // FLOATING TOOLBAR UI & INTERACTION
+    // FLOATING TOOLBAR UI
     // ==========================================
 
     @SuppressLint("ClickableViewAccessibility")
@@ -169,26 +168,24 @@ class FloatingViewService : Service() {
             y = 300
         }
 
-        // Build Custom Floating Bar UI programmatically for clean standalone service rendering
-        val context = this
         val dp = { value: Float ->
             TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value, resources.displayMetrics).toInt()
         }
 
-        val container = LinearLayout(context).apply {
+        val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             val bg = GradientDrawable().apply {
-                setColor(Color.parseColor("#0F172A")) // Dark Slate
+                setColor(Color.parseColor("#0F172A"))
                 cornerRadius = dp(24f).toFloat()
-                setStroke(dp(1.5f), Color.parseColor("#0284C7")) // Cyan accent border
+                setStroke(dp(1.5f), Color.parseColor("#0284C7"))
             }
             background = bg
             setPadding(dp(6f), dp(6f), dp(6f), dp(6f))
             elevation = dp(12f).toFloat()
         }
 
-        // --- Drag Header ---
-        val dragHandle = LinearLayout(context).apply {
+        // --- Drag Handle ---
+        val dragHandle = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
             setPadding(dp(8f), dp(4f), dp(8f), dp(6f))
@@ -204,16 +201,16 @@ class FloatingViewService : Service() {
         }
         container.addView(dragHandle)
 
-        // --- Action Buttons Container ---
-        val actionsRow = LinearLayout(context).apply {
+        // --- Action Buttons ---
+        val actionsRow = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
         }
 
-        // 1. Play / Pause Button
+        // 1. Play / Pause Button (▶)
         val playBtn = createMenuButton(
             text = "▶",
-            bgColor = "#10B981", // Emerald
+            bgColor = "#10B981",
             textColor = "#FFFFFF",
             sizeDp = 42f
         )
@@ -222,7 +219,7 @@ class FloatingViewService : Service() {
         }
         actionsRow.addView(playBtn)
 
-        // 2. Add Pointer Button (+)
+        // 2. Add Target Point Button (+)
         val addBtn = createMenuButton(
             text = "+",
             bgColor = "#1E293B",
@@ -230,16 +227,27 @@ class FloatingViewService : Service() {
             sizeDp = 36f
         )
         addBtn.setOnClickListener {
-            if (targetViews.size < 10) {
-                addTargetPointer()
-                Toast.makeText(context, "Đã thêm điểm chạm #${targetViews.size}", Toast.LENGTH_SHORT).show()
+            if (targetViews.size < 20) {
+                val nextId = targetViews.size + 1
+                val newPoint = ScriptPoint(
+                    id = nextId,
+                    name = "Điểm $nextId",
+                    x = 350f + (nextId * 30),
+                    y = 500f + (nextId * 40),
+                    delayBeforeMs = 0L,
+                    clickDurationMs = 40L,
+                    delayAfterMs = 100L
+                )
+                addTargetPointer(newPoint)
+                syncCurrentScreenToActiveScript()
+                Toast.makeText(this, "Đã thêm Điểm #$nextId", Toast.LENGTH_SHORT).show()
             } else {
-                Toast.makeText(context, "Tối đa 10 điểm chạm", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Tối đa 20 điểm chạm", Toast.LENGTH_SHORT).show()
             }
         }
         actionsRow.addView(addBtn)
 
-        // 3. Remove Pointer Button (-)
+        // 3. Remove Target Point Button (−)
         val removeBtn = createMenuButton(
             text = "−",
             bgColor = "#1E293B",
@@ -249,25 +257,58 @@ class FloatingViewService : Service() {
         removeBtn.setOnClickListener {
             if (targetViews.size > 1) {
                 removeLastTargetPointer()
+                syncCurrentScreenToActiveScript()
             } else {
-                Toast.makeText(context, "Tối thiểu 1 điểm chạm", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Tối thiểu 1 điểm chạm", Toast.LENGTH_SHORT).show()
             }
         }
         actionsRow.addView(removeBtn)
 
-        // 4. Quick Interval Settings Button (⏱)
-        val speedBtn = createMenuButton(
-            text = "⏱",
+        // 4. Quick Loop & Timer Settings Button (⚙️)
+        val loopSettingsBtn = createMenuButton(
+            text = "⚙️",
+            bgColor = "#1E293B",
+            textColor = "#F59E0B",
+            sizeDp = 36f
+        )
+        loopSettingsBtn.setOnClickListener {
+            showLoopAndTimerSettingsOverlay()
+        }
+        actionsRow.addView(loopSettingsBtn)
+
+        // 5. Script Switcher & Presets Button (📂)
+        val scriptBtn = createMenuButton(
+            text = "📂",
             bgColor = "#1E293B",
             textColor = "#FBBF24",
             sizeDp = 36f
         )
-        speedBtn.setOnClickListener {
-            cycleIntervalSpeed(speedBtn)
+        scriptBtn.setOnClickListener {
+            showScriptPickerOverlay()
         }
-        actionsRow.addView(speedBtn)
+        actionsRow.addView(scriptBtn)
 
-        // 5. Close / Exit Button (✕)
+        // 6. Save Current Positions Button (💾)
+        val saveBtn = createMenuButton(
+            text = "💾",
+            bgColor = "#1E293B",
+            textColor = "#34D399",
+            sizeDp = 36f
+        )
+        saveBtn.setOnClickListener {
+            syncCurrentScreenToActiveScript()
+            serviceScope.launch {
+                scriptRepository.saveOrUpdateScript(activeScript)
+                Toast.makeText(
+                    this@FloatingViewService,
+                    "Đã lưu tọa độ & thời gian vào '${activeScript.name}'!",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+        actionsRow.addView(saveBtn)
+
+        // 7. Close Button (✕)
         val closeBtn = createMenuButton(
             text = "✕",
             bgColor = "#334155",
@@ -282,7 +323,7 @@ class FloatingViewService : Service() {
 
         container.addView(actionsRow)
 
-        // Setup Touch Dragging for the entire Toolbar
+        // Setup Touch Dragging
         var initialX = 0
         var initialY = 0
         var initialTouchX = 0f
@@ -332,13 +373,13 @@ class FloatingViewService : Service() {
         }
         return TextView(this).apply {
             this.text = text
-            textSize = 17f
+            textSize = 15f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.parseColor(textColor))
             gravity = Gravity.CENTER
             val size = dp(sizeDp)
             val lp = LinearLayout.LayoutParams(size, size).apply {
-                setMargins(0, dp(4f), 0, dp(4f))
+                setMargins(0, dp(3f), 0, dp(3f))
             }
             layoutParams = lp
 
@@ -350,28 +391,34 @@ class FloatingViewService : Service() {
         }
     }
 
-    private fun cycleIntervalSpeed(btn: TextView) {
-        val speeds = listOf(50L, 100L, 200L, 500L, 1000L)
-        val currentIndex = speeds.indexOf(config.intervalMs)
-        val nextInterval = speeds[(currentIndex + 1) % speeds.size]
-        config = config.copy(intervalMs = nextInterval)
-        Toast.makeText(this, "Tốc độ click: ${nextInterval}ms (${1000 / nextInterval} lần/s)", Toast.LENGTH_SHORT).show()
-    }
-
     // ==========================================
     // TARGET POINTERS (DRAGGABLE CIRCLES OVER GAME)
     // ==========================================
 
     private data class TargetPointerHolder(
-        val id: Int,
+        var point: ScriptPoint,
         val view: View,
         val params: WindowManager.LayoutParams,
-        val pulseRing: View
+        val pulseRing: View,
+        val label: TextView,
+        val timeBadge: TextView
     )
 
+    private fun loadScriptPointsToScreen(script: AutoClickScript) {
+        targetViews.forEach {
+            try {
+                windowManager.removeView(it.view)
+            } catch (_: Exception) {}
+        }
+        targetViews.clear()
+
+        script.points.forEach { point ->
+            addTargetPointer(point)
+        }
+    }
+
     @SuppressLint("ClickableViewAccessibility")
-    private fun addTargetPointer() {
-        val index = targetViews.size + 1
+    private fun addTargetPointer(point: ScriptPoint) {
         val layoutType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         } else {
@@ -384,72 +431,90 @@ class FloatingViewService : Service() {
         }
 
         val pointerParams = WindowManager.LayoutParams(
-            dp(56f),
-            dp(56f),
+            dp(64f),
+            dp(72f),
             layoutType,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            // Offset each new pointer slightly
-            x = 300 + (index * 40)
-            y = 500 + (index * 60)
+            x = point.x.toInt()
+            y = point.y.toInt()
         }
 
-        // Outer Root Frame
-        val targetFrame = FrameLayout(this).apply {
+        val targetFrame = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
             clipChildren = false
             clipToPadding = false
         }
 
-        // Animated Pulse Ring
+        val discFrame = FrameLayout(this).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(48f), dp(48f))
+        }
+
         val pulseRing = View(this).apply {
-            layoutParams = FrameLayout.LayoutParams(dp(54f), dp(54f), Gravity.CENTER)
+            layoutParams = FrameLayout.LayoutParams(dp(48f), dp(48f), Gravity.CENTER)
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
-                setColor(Color.parseColor("#220284C7"))
+                setColor(Color.parseColor("#3300E5FF"))
                 setStroke(dp(2f), Color.parseColor("#00E5FF"))
             }
             visibility = View.INVISIBLE
         }
-        targetFrame.addView(pulseRing)
+        discFrame.addView(pulseRing)
 
-        // Main Center Target Disc
         val disc = LinearLayout(this).apply {
-            layoutParams = FrameLayout.LayoutParams(dp(44f), dp(44f), Gravity.CENTER)
-            orientation = LinearLayout.VERTICAL
+            layoutParams = FrameLayout.LayoutParams(dp(42f), dp(42f), Gravity.CENTER)
             gravity = Gravity.CENTER
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
-                setColor(Color.parseColor("#CC0F172A")) // Semi-transparent dark
-                setStroke(dp(2.5f), Color.parseColor("#00E5FF")) // Neon Cyan
+                setColor(Color.parseColor("#DD0F172A"))
+                setStroke(dp(2.5f), Color.parseColor("#00E5FF"))
             }
-
-            val label = TextView(context).apply {
-                text = "$index"
-                textSize = 15f
-                typeface = Typeface.DEFAULT_BOLD
-                setTextColor(Color.parseColor("#00E5FF"))
-            }
-            addView(label)
         }
-        targetFrame.addView(disc)
 
-        // Center crosshair dot
+        val label = TextView(this).apply {
+            text = "${point.id}"
+            textSize = 14f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#00E5FF"))
+        }
+        disc.addView(label)
+        discFrame.addView(disc)
+
         val centerDot = View(this).apply {
-            layoutParams = FrameLayout.LayoutParams(dp(6f), dp(6f), Gravity.CENTER)
+            layoutParams = FrameLayout.LayoutParams(dp(5f), dp(5f), Gravity.CENTER)
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
                 setColor(Color.parseColor("#FFFFFF"))
             }
         }
-        targetFrame.addView(centerDot)
+        discFrame.addView(centerDot)
+        targetFrame.addView(discFrame)
 
-        // Touch listener to drag target point
+        val timeBadge = TextView(this).apply {
+            text = "${point.delayAfterMs}ms"
+            textSize = 10f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#FBBF24"))
+            gravity = Gravity.CENTER
+            val bg = GradientDrawable().apply {
+                setColor(Color.parseColor("#EE0F172A"))
+                cornerRadius = dp(6f).toFloat()
+                setStroke(dp(0.8f), Color.parseColor("#FBBF24"))
+            }
+            background = bg
+            setPadding(dp(4f), dp(1f), dp(4f), dp(1f))
+        }
+        targetFrame.addView(timeBadge)
+
         var initialX = 0
         var initialY = 0
         var initialTouchX = 0f
         var initialTouchY = 0f
+        var touchStartTime = 0L
+        var isDragging = false
 
         targetFrame.setOnTouchListener { _, event ->
             when (event.action) {
@@ -458,12 +523,28 @@ class FloatingViewService : Service() {
                     initialY = pointerParams.y
                     initialTouchX = event.rawX
                     initialTouchY = event.rawY
+                    touchStartTime = System.currentTimeMillis()
+                    isDragging = false
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    pointerParams.x = initialX + (event.rawX - initialTouchX).toInt()
-                    pointerParams.y = initialY + (event.rawY - initialTouchY).toInt()
+                    val dx = (event.rawX - initialTouchX).toInt()
+                    val dy = (event.rawY - initialTouchY).toInt()
+                    if (Math.abs(dx) > 6 || Math.abs(dy) > 6) {
+                        isDragging = true
+                    }
+                    pointerParams.x = initialX + dx
+                    pointerParams.y = initialY + dy
+                    point.x = pointerParams.x.toFloat()
+                    point.y = pointerParams.y.toFloat()
                     windowManager.updateViewLayout(targetFrame, pointerParams)
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    val clickDuration = System.currentTimeMillis() - touchStartTime
+                    if (!isDragging && clickDuration < 300) {
+                        showPointTimingEditor(point, timeBadge)
+                    }
                     true
                 }
                 else -> false
@@ -471,7 +552,7 @@ class FloatingViewService : Service() {
         }
 
         windowManager.addView(targetFrame, pointerParams)
-        targetViews.add(TargetPointerHolder(index, targetFrame, pointerParams, pulseRing))
+        targetViews.add(TargetPointerHolder(point, targetFrame, pointerParams, pulseRing, label, timeBadge))
     }
 
     private fun removeLastTargetPointer() {
@@ -485,8 +566,570 @@ class FloatingViewService : Service() {
         }
     }
 
+    private fun syncCurrentScreenToActiveScript() {
+        val updatedPoints = targetViews.mapIndexed { idx, holder ->
+            holder.point.copy(
+                id = idx + 1,
+                name = holder.point.name.ifBlank { "Điểm ${idx + 1}" },
+                x = holder.params.x.toFloat(),
+                y = holder.params.y.toFloat()
+            )
+        }
+        activeScript = activeScript.copy(points = updatedPoints)
+    }
+
     // ==========================================
-    // AUTO CLICK EXECUTION LOOP
+    // ON-SCREEN POINT TIMING EDITOR DIALOG
+    // ==========================================
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun showPointTimingEditor(point: ScriptPoint, timeBadge: TextView) {
+        dismissAllDialogs()
+
+        val layoutType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        } else {
+            @Suppress("DEPRECATION")
+            WindowManager.LayoutParams.TYPE_PHONE
+        }
+
+        val dp = { value: Float ->
+            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value, resources.displayMetrics).toInt()
+        }
+
+        val dialogParams = WindowManager.LayoutParams(
+            dp(280f),
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            layoutType,
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.CENTER
+        }
+
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            val bg = GradientDrawable().apply {
+                setColor(Color.parseColor("#0F172A"))
+                cornerRadius = dp(16f).toFloat()
+                setStroke(dp(1.5f), Color.parseColor("#00E5FF"))
+            }
+            background = bg
+            setPadding(dp(16f), dp(14f), dp(16f), dp(14f))
+            elevation = dp(16f).toFloat()
+        }
+
+        val title = TextView(this).apply {
+            text = "⏱ Cài đặt Điểm #${point.id} (${point.name})"
+            textSize = 15f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#00E5FF"))
+        }
+        root.addView(title)
+
+        root.addView(createSectionLabel("Thời gian chờ sau khi click (ms):"))
+        val delayAfterInput = createNumberEditText("${point.delayAfterMs}")
+        root.addView(delayAfterInput)
+
+        val presetRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(4f), 0, dp(6f))
+        }
+        listOf(20L, 50L, 100L, 200L, 500L).forEach { presetMs ->
+            val chip = TextView(this).apply {
+                text = "${presetMs}ms"
+                textSize = 11f
+                setTextColor(Color.parseColor("#38BDF8"))
+                setPadding(dp(6f), dp(3f), dp(6f), dp(3f))
+                val bg = GradientDrawable().apply {
+                    setColor(Color.parseColor("#1E293B"))
+                    cornerRadius = dp(6f).toFloat()
+                }
+                background = bg
+                setOnClickListener {
+                    delayAfterInput.setText("$presetMs")
+                }
+                val lp = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    setMargins(0, 0, dp(4f), 0)
+                }
+                layoutParams = lp
+            }
+            presetRow.addView(chip)
+        }
+        root.addView(presetRow)
+
+        root.addView(createSectionLabel("Thời gian giữ chạm click (ms):"))
+        val durationInput = createNumberEditText("${point.clickDurationMs}")
+        root.addView(durationInput)
+
+        root.addView(createSectionLabel("Thời gian chờ trước khi click (ms):"))
+        val delayBeforeInput = createNumberEditText("${point.delayBeforeMs}")
+        root.addView(delayBeforeInput)
+
+        val btnRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END
+            setPadding(0, dp(12f), 0, 0)
+        }
+
+        val cancelBtn = TextView(this).apply {
+            text = "Đóng"
+            textSize = 13f
+            setTextColor(Color.parseColor("#94A3B8"))
+            setPadding(dp(12f), dp(8f), dp(12f), dp(8f))
+            setOnClickListener {
+                dismissPointEditor()
+            }
+        }
+        btnRow.addView(cancelBtn)
+
+        val saveBtn = TextView(this).apply {
+            text = "Lưu Thay Đổi"
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#FFFFFF"))
+            val bg = GradientDrawable().apply {
+                setColor(Color.parseColor("#0284C7"))
+                cornerRadius = dp(8f).toFloat()
+            }
+            background = bg
+            setPadding(dp(14f), dp(8f), dp(14f), dp(8f))
+            setOnClickListener {
+                val newDelayAfter = delayAfterInput.text.toString().toLongOrNull() ?: point.delayAfterMs
+                val newDuration = durationInput.text.toString().toLongOrNull() ?: point.clickDurationMs
+                val newDelayBefore = delayBeforeInput.text.toString().toLongOrNull() ?: point.delayBeforeMs
+
+                point.delayAfterMs = newDelayAfter.coerceAtLeast(5L)
+                point.clickDurationMs = newDuration.coerceAtLeast(10L)
+                point.delayBeforeMs = newDelayBefore.coerceAtLeast(0L)
+
+                timeBadge.text = "${point.delayAfterMs}ms"
+                syncCurrentScreenToActiveScript()
+
+                serviceScope.launch {
+                    scriptRepository.saveOrUpdateScript(activeScript)
+                }
+
+                Toast.makeText(this@FloatingViewService, "Đã cập nhật thời gian Điểm #${point.id}!", Toast.LENGTH_SHORT).show()
+                dismissPointEditor()
+            }
+        }
+        btnRow.addView(saveBtn)
+        root.addView(btnRow)
+
+        pointEditorDialog = root
+        windowManager.addView(root, dialogParams)
+    }
+
+    private fun dismissPointEditor() {
+        pointEditorDialog?.let {
+            try {
+                windowManager.removeView(it)
+            } catch (_: Exception) {}
+            pointEditorDialog = null
+        }
+    }
+
+    // ==========================================
+    // IN-GAME LOOP & TIMER SETTINGS DIALOG (⚙️)
+    // ==========================================
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun showLoopAndTimerSettingsOverlay() {
+        dismissAllDialogs()
+
+        val layoutType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        } else {
+            @Suppress("DEPRECATION")
+            WindowManager.LayoutParams.TYPE_PHONE
+        }
+
+        val dp = { value: Float ->
+            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value, resources.displayMetrics).toInt()
+        }
+
+        val dialogParams = WindowManager.LayoutParams(
+            dp(290f),
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            layoutType,
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.CENTER
+        }
+
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            val bg = GradientDrawable().apply {
+                setColor(Color.parseColor("#0F172A"))
+                cornerRadius = dp(16f).toFloat()
+                setStroke(dp(1.5f), Color.parseColor("#F59E0B"))
+            }
+            background = bg
+            setPadding(dp(16f), dp(14f), dp(16f), dp(14f))
+            elevation = dp(16f).toFloat()
+        }
+
+        // Header
+        val title = TextView(this).apply {
+            text = "⚙️ Cài đặt Số Vòng Lặp & Hẹn Giờ"
+            textSize = 15f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#F59E0B"))
+        }
+        root.addView(title)
+
+        // 1. Repeat Count (Số vòng lặp)
+        root.addView(createSectionLabel("Số vòng lặp kịch bản (0 = Vô hạn):"))
+        val repeatInput = createNumberEditText("${activeScript.repeatCount}")
+        root.addView(repeatInput)
+
+        // Repeat Presets
+        val repeatPresetRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(3f), 0, dp(6f))
+        }
+        listOf(0 to "Vô hạn", 10 to "10 lần", 50 to "50 lần", 100 to "100 lần", 500 to "500").forEach { (count, label) ->
+            val chip = TextView(this).apply {
+                text = label
+                textSize = 10f
+                setTextColor(Color.parseColor("#38BDF8"))
+                setPadding(dp(5f), dp(3f), dp(5f), dp(3f))
+                val bg = GradientDrawable().apply {
+                    setColor(Color.parseColor("#1E293B"))
+                    cornerRadius = dp(6f).toFloat()
+                }
+                background = bg
+                setOnClickListener {
+                    repeatInput.setText("$count")
+                }
+                val lp = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    setMargins(0, 0, dp(3f), 0)
+                }
+                layoutParams = lp
+            }
+            repeatPresetRow.addView(chip)
+        }
+        root.addView(repeatPresetRow)
+
+        // 2. Loop Delay (Thời gian nghỉ giữa các vòng lặp)
+        root.addView(createSectionLabel("Thời gian nghỉ giữa các vòng (ms):"))
+        val loopDelayInput = createNumberEditText("${activeScript.loopDelayMs}")
+        root.addView(loopDelayInput)
+
+        val loopDelayPresetRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(3f), 0, dp(6f))
+        }
+        listOf(0L to "0ms", 100L to "100ms", 500L to "500ms", 1000L to "1s", 2000L to "2s").forEach { (ms, label) ->
+            val chip = TextView(this).apply {
+                text = label
+                textSize = 10f
+                setTextColor(Color.parseColor("#FBBF24"))
+                setPadding(dp(5f), dp(3f), dp(5f), dp(3f))
+                val bg = GradientDrawable().apply {
+                    setColor(Color.parseColor("#1E293B"))
+                    cornerRadius = dp(6f).toFloat()
+                }
+                background = bg
+                setOnClickListener {
+                    loopDelayInput.setText("$ms")
+                }
+                val lp = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    setMargins(0, 0, dp(3f), 0)
+                }
+                layoutParams = lp
+            }
+            loopDelayPresetRow.addView(chip)
+        }
+        root.addView(loopDelayPresetRow)
+
+        // 3. Stop Timer (Hẹn giờ tự động dừng)
+        val initialMinutes = activeScript.stopTimerSeconds / 60
+        root.addView(createSectionLabel("Hẹn giờ tự dừng (Phút - 0 = Chạy liên tục):"))
+        val timerMinutesInput = createNumberEditText("$initialMinutes")
+        root.addView(timerMinutesInput)
+
+        val timerPresetRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(3f), 0, dp(8f))
+        }
+        listOf(0L to "Tắt", 1L to "1p", 5L to "5p", 15L to "15p", 30L to "30p", 60L to "1h").forEach { (mins, label) ->
+            val chip = TextView(this).apply {
+                text = label
+                textSize = 10f
+                setTextColor(Color.parseColor("#34D399"))
+                setPadding(dp(5f), dp(3f), dp(5f), dp(3f))
+                val bg = GradientDrawable().apply {
+                    setColor(Color.parseColor("#1E293B"))
+                    cornerRadius = dp(6f).toFloat()
+                }
+                background = bg
+                setOnClickListener {
+                    timerMinutesInput.setText("$mins")
+                }
+                val lp = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    setMargins(0, 0, dp(3f), 0)
+                }
+                layoutParams = lp
+            }
+            timerPresetRow.addView(chip)
+        }
+        root.addView(timerPresetRow)
+
+        // Action Buttons (Hủy / Lưu & Áp Dụng)
+        val btnRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END
+            setPadding(0, dp(8f), 0, 0)
+        }
+
+        val cancelBtn = TextView(this).apply {
+            text = "Hủy"
+            textSize = 13f
+            setTextColor(Color.parseColor("#94A3B8"))
+            setPadding(dp(12f), dp(8f), dp(12f), dp(8f))
+            setOnClickListener {
+                dismissLoopSettings()
+            }
+        }
+        btnRow.addView(cancelBtn)
+
+        val saveBtn = TextView(this).apply {
+            text = "Áp Dụng Ngay"
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#FFFFFF"))
+            val bg = GradientDrawable().apply {
+                setColor(Color.parseColor("#F59E0B"))
+                cornerRadius = dp(8f).toFloat()
+            }
+            background = bg
+            setPadding(dp(14f), dp(8f), dp(14f), dp(8f))
+            setOnClickListener {
+                val newRepeat = repeatInput.text.toString().toIntOrNull() ?: activeScript.repeatCount
+                val newLoopDelay = loopDelayInput.text.toString().toLongOrNull() ?: activeScript.loopDelayMs
+                val newTimerMins = timerMinutesInput.text.toString().toLongOrNull() ?: 0L
+
+                activeScript = activeScript.copy(
+                    repeatCount = newRepeat.coerceAtLeast(0),
+                    loopDelayMs = newLoopDelay.coerceAtLeast(0L),
+                    stopTimerSeconds = (newTimerMins * 60L).coerceAtLeast(0L)
+                )
+
+                serviceScope.launch {
+                    scriptRepository.saveOrUpdateScript(activeScript)
+                }
+
+                val desc = if (activeScript.repeatCount > 0) "${activeScript.repeatCount} vòng lặp" else "Vô hạn"
+                val timerDesc = if (activeScript.stopTimerSeconds > 0) " • Tự dừng sau ${activeScript.stopTimerSeconds / 60} phút" else ""
+                Toast.makeText(this@FloatingViewService, "Đã lưu: $desc$timerDesc", Toast.LENGTH_SHORT).show()
+                dismissLoopSettings()
+            }
+        }
+        btnRow.addView(saveBtn)
+        root.addView(btnRow)
+
+        loopSettingsDialog = root
+        windowManager.addView(root, dialogParams)
+    }
+
+    private fun dismissLoopSettings() {
+        loopSettingsDialog?.let {
+            try {
+                windowManager.removeView(it)
+            } catch (_: Exception) {}
+            loopSettingsDialog = null
+        }
+    }
+
+    // ==========================================
+    // IN-GAME SCRIPT SWITCHER OVERLAY (📂)
+    // ==========================================
+
+    private fun showScriptPickerOverlay() {
+        dismissAllDialogs()
+
+        val layoutType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        } else {
+            @Suppress("DEPRECATION")
+            WindowManager.LayoutParams.TYPE_PHONE
+        }
+
+        val dp = { value: Float ->
+            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value, resources.displayMetrics).toInt()
+        }
+
+        val dialogParams = WindowManager.LayoutParams(
+            dp(300f),
+            dp(360f),
+            layoutType,
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.CENTER
+        }
+
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            val bg = GradientDrawable().apply {
+                setColor(Color.parseColor("#0F172A"))
+                cornerRadius = dp(16f).toFloat()
+                setStroke(dp(1.5f), Color.parseColor("#FBBF24"))
+            }
+            background = bg
+            setPadding(dp(14f), dp(12f), dp(14f), dp(12f))
+        }
+
+        val header = TextView(this).apply {
+            text = "📂 Chọn Kịch Bản Auto Click"
+            textSize = 15f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#FBBF24"))
+        }
+        root.addView(header)
+
+        val scroll = ScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1f
+            ).apply {
+                setMargins(0, dp(8f), 0, dp(8f))
+            }
+        }
+
+        val listContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+
+        val allScripts = scriptRepository.scriptsFlow.value
+        allScripts.forEach { script ->
+            val isSelected = script.id == activeScript.id
+            val item = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                val bg = GradientDrawable().apply {
+                    setColor(Color.parseColor(if (isSelected) "#1E293B" else "#111827"))
+                    cornerRadius = dp(10f).toFloat()
+                    setStroke(dp(1f), Color.parseColor(if (isSelected) "#00E5FF" else "#1F2937"))
+                }
+                background = bg
+                setPadding(dp(10f), dp(8f), dp(10f), dp(8f))
+                val lp = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    setMargins(0, dp(3f), 0, dp(3f))
+                }
+                layoutParams = lp
+                setOnClickListener {
+                    activeScript = script
+                    scriptRepository.setActiveScript(script)
+                    loadScriptPointsToScreen(script)
+                    Toast.makeText(this@FloatingViewService, "Đã nạp kịch bản: ${script.name}", Toast.LENGTH_SHORT).show()
+                    dismissScriptPicker()
+                }
+            }
+
+            val name = TextView(this).apply {
+                text = script.name
+                textSize = 13f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(Color.parseColor(if (isSelected) "#00E5FF" else "#F8FAFC"))
+            }
+            item.addView(name)
+
+            val details = TextView(this).apply {
+                text = "${script.points.size} điểm • Lặp: ${if (script.repeatCount == 0) "Vô hạn" else "${script.repeatCount} lần"} • Nghỉ: ${script.loopDelayMs}ms"
+                textSize = 11f
+                setTextColor(Color.parseColor("#94A3B8"))
+            }
+            item.addView(details)
+
+            listContainer.addView(item)
+        }
+        scroll.addView(listContainer)
+        root.addView(scroll)
+
+        val closeBtn = TextView(this).apply {
+            text = "Đóng"
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#94A3B8"))
+            gravity = Gravity.CENTER
+            setPadding(0, dp(8f), 0, dp(4f))
+            setOnClickListener {
+                dismissScriptPicker()
+            }
+        }
+        root.addView(closeBtn)
+
+        scriptPickerDialog = root
+        windowManager.addView(root, dialogParams)
+    }
+
+    private fun dismissScriptPicker() {
+        scriptPickerDialog?.let {
+            try {
+                windowManager.removeView(it)
+            } catch (_: Exception) {}
+            scriptPickerDialog = null
+        }
+    }
+
+    private fun dismissAllDialogs() {
+        dismissPointEditor()
+        dismissLoopSettings()
+        dismissScriptPicker()
+    }
+
+    private fun createSectionLabel(text: String): TextView {
+        val dp = { value: Float ->
+            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value, resources.displayMetrics).toInt()
+        }
+        return TextView(this).apply {
+            this.text = text
+            textSize = 12f
+            setTextColor(Color.parseColor("#94A3B8"))
+            setPadding(0, dp(6f), 0, dp(2f))
+        }
+    }
+
+    private fun createNumberEditText(initialValue: String): EditText {
+        val dp = { value: Float ->
+            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value, resources.displayMetrics).toInt()
+        }
+        return EditText(this).apply {
+            setText(initialValue)
+            inputType = InputType.TYPE_CLASS_NUMBER
+            textSize = 14f
+            setTextColor(Color.parseColor("#FFFFFF"))
+            val bg = GradientDrawable().apply {
+                setColor(Color.parseColor("#1E293B"))
+                cornerRadius = dp(8f).toFloat()
+                setStroke(dp(1f), Color.parseColor("#334155"))
+            }
+            background = bg
+            setPadding(dp(10f), dp(8f), dp(10f), dp(8f))
+        }
+    }
+
+    // ==========================================
+    // AUTO CLICK SCRIPT EXECUTION ENGINE
     // ==========================================
 
     private fun toggleClicker(playBtn: TextView) {
@@ -494,10 +1137,9 @@ class FloatingViewService : Service() {
         if (accessibilityService == null) {
             Toast.makeText(
                 this,
-                "⚠️ Vui lòng cấp quyền Trợ năng (Accessibility Service) cho ứng dụng trước!",
+                "⚠️ Vui lòng cấp quyền Trợ năng (Accessibility Service) trước!",
                 Toast.LENGTH_LONG
             ).show()
-            // Open accessibility settings
             val intent = Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
             }
@@ -509,68 +1151,106 @@ class FloatingViewService : Service() {
             stopClicking()
             playBtn.text = "▶"
             (playBtn.background as? GradientDrawable)?.setColor(Color.parseColor("#10B981"))
-            Toast.makeText(this, "Đã tạm dừng Auto Click", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Đã tạm dừng kịch bản", Toast.LENGTH_SHORT).show()
         } else {
             startClicking(playBtn)
             playBtn.text = "⏸"
-            (playBtn.background as? GradientDrawable)?.setColor(Color.parseColor("#EF4444")) // Red
-            Toast.makeText(this, "Đang tự động click...", Toast.LENGTH_SHORT).show()
+            (playBtn.background as? GradientDrawable)?.setColor(Color.parseColor("#EF4444"))
+            val repeatText = if (activeScript.repeatCount > 0) "${activeScript.repeatCount} vòng" else "Vô hạn"
+            Toast.makeText(this, "Đang chạy '${activeScript.name}' ($repeatText)...", Toast.LENGTH_SHORT).show()
         }
     }
 
     private fun startClicking(playBtn: TextView) {
         isPlaying = true
         _isClicking.value = true
+        currentLoopCount = 0
         clickJob?.cancel()
 
+        val startTimestamp = System.currentTimeMillis()
+
         clickJob = serviceScope.launch(Dispatchers.Default) {
-            var currentIteration = 0
             val dpCenterOffset = TypedValue.applyDimension(
                 TypedValue.COMPLEX_UNIT_DIP,
-                28f,
+                24f,
                 resources.displayMetrics
             )
 
             while (isActive && isPlaying) {
+                // Check Stop Timer
+                if (activeScript.stopTimerSeconds > 0) {
+                    val elapsedSeconds = (System.currentTimeMillis() - startTimestamp) / 1000
+                    if (elapsedSeconds >= activeScript.stopTimerSeconds) {
+                        mainHandler.post {
+                            stopClicking()
+                            playBtn.text = "▶"
+                            (playBtn.background as? GradientDrawable)?.setColor(Color.parseColor("#10B981"))
+                            Toast.makeText(
+                                this@FloatingViewService,
+                                "⏰ Đã hết thời gian chạy kịch bản (${activeScript.stopTimerSeconds / 60} phút)!",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                        break
+                    }
+                }
+
                 val targets = synchronized(targetViews) { targetViews.toList() }
                 if (targets.isEmpty()) {
                     delay(200)
                     continue
                 }
 
+                // Execute each point in sequence
                 for (holder in targets) {
+                    if (!isActive || !isPlaying) break
+
+                    val point = holder.point
+
+                    if (point.delayBeforeMs > 0) {
+                        delay(point.delayBeforeMs)
+                    }
+
                     if (!isActive || !isPlaying) break
 
                     val clickX = holder.params.x.toFloat() + dpCenterOffset
                     val clickY = holder.params.y.toFloat() + dpCenterOffset
 
-                    // Visual pulse animation on UI thread
                     mainHandler.post {
                         animateTargetPulse(holder.pulseRing)
                     }
 
-                    // Dispatch accessibility gesture click
                     AutoClickService.instance?.dispatchClick(
                         x = clickX,
                         y = clickY,
-                        durationMs = config.clickDurationMs
+                        durationMs = point.clickDurationMs
                     )
 
                     clickCount++
                     _clickCountFlow.value = clickCount
 
-                    // Wait interval between clicks
-                    val waitTime = (config.intervalMs - config.clickDurationMs).coerceAtLeast(10L)
+                    val waitTime = point.delayAfterMs.coerceAtLeast(5L)
                     delay(waitTime)
                 }
 
-                currentIteration++
-                if (config.repeatCount > 0 && currentIteration >= config.repeatCount) {
+                // Delay between loop cycles
+                if (activeScript.loopDelayMs > 0) {
+                    delay(activeScript.loopDelayMs)
+                }
+
+                currentLoopCount++
+
+                // Check Repeat Count Limit
+                if (activeScript.repeatCount > 0 && currentLoopCount >= activeScript.repeatCount) {
                     mainHandler.post {
                         stopClicking()
                         playBtn.text = "▶"
                         (playBtn.background as? GradientDrawable)?.setColor(Color.parseColor("#10B981"))
-                        Toast.makeText(this@FloatingViewService, "Đã hoàn thành ${config.repeatCount} lượt click", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(
+                            this@FloatingViewService,
+                            "🎉 Đã hoàn thành chính xác ${activeScript.repeatCount} vòng lặp kịch bản!",
+                            Toast.LENGTH_LONG
+                        ).show()
                     }
                     break
                 }
@@ -599,22 +1279,18 @@ class FloatingViewService : Service() {
 
     override fun onDestroy() {
         stopClicking()
+        dismissAllDialogs()
         serviceScope.cancel()
 
-        // Clean up floating views
         floatingToolbar?.let {
             try {
                 windowManager.removeView(it)
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
+            } catch (_: Exception) {}
         }
         targetViews.forEach {
             try {
                 windowManager.removeView(it.view)
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
+            } catch (_: Exception) {}
         }
         targetViews.clear()
 
@@ -625,10 +1301,7 @@ class FloatingViewService : Service() {
     companion object {
         private const val NOTIFICATION_ID = 1001
 
-        const val EXTRA_INTERVAL_MS = "extra_interval_ms"
-        const val EXTRA_DURATION_MS = "extra_duration_ms"
-        const val EXTRA_REPEAT_COUNT = "extra_repeat_count"
-        const val EXTRA_MODE = "extra_mode"
+        const val EXTRA_SCRIPT_ID = "extra_script_id"
 
         private val _isOverlayActive = MutableStateFlow(false)
         val isOverlayActive: StateFlow<Boolean> = _isOverlayActive.asStateFlow()
@@ -637,21 +1310,16 @@ class FloatingViewService : Service() {
         val isClicking: StateFlow<Boolean> = _isClicking.asStateFlow()
 
         private val _clickCountFlow = MutableStateFlow(0L)
-        val clickCountFlow: StateFlow<Boolean> = MutableStateFlow(false) // helper
         val totalClicks: StateFlow<Long> = _clickCountFlow.asStateFlow()
 
         fun start(
             context: Context,
-            intervalMs: Long = 100L,
-            durationMs: Long = 40L,
-            repeatCount: Int = 0,
-            mode: ClickMode = ClickMode.SINGLE_POINT
+            scriptId: String? = null
         ) {
             val intent = Intent(context, FloatingViewService::class.java).apply {
-                putExtra(EXTRA_INTERVAL_MS, intervalMs)
-                putExtra(EXTRA_DURATION_MS, durationMs)
-                putExtra(EXTRA_REPEAT_COUNT, repeatCount)
-                putExtra(EXTRA_MODE, mode.name)
+                if (scriptId != null) {
+                    putExtra(EXTRA_SCRIPT_ID, scriptId)
+                }
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)

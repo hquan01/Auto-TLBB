@@ -17,11 +17,10 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -35,16 +34,23 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Category
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.Layers
+import androidx.compose.material.icons.filled.Loop
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Security
-import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.TouchApp
@@ -56,10 +62,8 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Divider
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -75,7 +79,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -93,11 +96,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.data.AppUpdateInfo
-import com.example.data.ClickMode
+import com.example.data.AutoClickScript
+import com.example.data.ScriptCategory
+import com.example.data.ScriptPoint
 import com.example.ui.MainViewModel
 import com.example.ui.UpdateUiState
 import com.example.ui.theme.BrightCyan
@@ -125,7 +132,6 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        // Handle auto-update trigger if opened from system notification
         if (intent?.getBooleanExtra(UpdateManager.EXTRA_AUTO_UPDATE, false) == true) {
             viewModel.checkForUpdates()
         }
@@ -150,13 +156,11 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AutoClickerMainScreen(viewModel: MainViewModel) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    // Auto-refresh permissions whenever screen regains focus
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
@@ -170,7 +174,10 @@ fun AutoClickerMainScreen(viewModel: MainViewModel) {
     }
 
     val permissionsState by viewModel.permissionsState.collectAsState()
-    val clickConfig by viewModel.clickConfig.collectAsState()
+    val scriptsList by viewModel.scriptsList.collectAsState()
+    val activeScript by viewModel.activeScript.collectAsState()
+    val editingScript by viewModel.editingScript.collectAsState()
+    val selectedCategoryFilter by viewModel.selectedCategoryFilter.collectAsState()
     val isOverlayActive by viewModel.isOverlayActive.collectAsState()
     val isClicking by viewModel.isClicking.collectAsState()
     val totalClicks by viewModel.totalClicks.collectAsState()
@@ -234,13 +241,19 @@ fun AutoClickerMainScreen(viewModel: MainViewModel) {
                 }
             )
 
-            // 2. Auto Clicker Configuration & Launcher Card
-            AutoClickControlCard(
+            // 2. SCRIPT MANAGEMENT & MULTI-AUTO CATEGORIES CARD
+            ScriptManagerCard(
+                scriptsList = scriptsList,
+                activeScript = activeScript,
+                selectedCategoryFilter = selectedCategoryFilter,
                 isOverlayActive = isOverlayActive,
-                isClicking = isClicking,
-                intervalMs = clickConfig.intervalMs,
-                repeatCount = clickConfig.repeatCount,
-                clickMode = clickConfig.mode,
+                onSelectCategoryFilter = { viewModel.setCategoryFilter(it) },
+                onSelectScript = { viewModel.selectActiveScript(it) },
+                onEditScript = { viewModel.openScriptEditor(it) },
+                onCreateNewScript = {
+                    viewModel.openScriptEditor(null, selectedCategoryFilter ?: ScriptCategory.FARMING)
+                },
+                onDeleteScript = { viewModel.deleteScript(it) },
                 onToggleOverlay = {
                     if (isOverlayActive) {
                         viewModel.stopFloatingOverlay()
@@ -252,7 +265,7 @@ fun AutoClickerMainScreen(viewModel: MainViewModel) {
                                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
                             }
                             context.startActivity(intent)
-                            return@AutoClickControlCard
+                            return@ScriptManagerCard
                         }
                         if (!permissionsState.isOverlayGranted) {
                             Toast.makeText(context, "⚠️ Vui lòng cấp quyền Cửa sổ nổi (Overlay) trước!", Toast.LENGTH_LONG).show()
@@ -263,18 +276,15 @@ fun AutoClickerMainScreen(viewModel: MainViewModel) {
                                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
                             }
                             context.startActivity(intent)
-                            return@AutoClickControlCard
+                            return@ScriptManagerCard
                         }
                         viewModel.startFloatingOverlay()
-                        Toast.makeText(context, "Đã bật Bảng điều khiển nổi đè lên màn hình!", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "Đã bật Bảng điều khiển nổi cho '${activeScript.name}'!", Toast.LENGTH_SHORT).show()
                     }
-                },
-                onIntervalChanged = { viewModel.updateInterval(it) },
-                onRepeatCountChanged = { viewModel.updateRepeatCount(it) },
-                onModeChanged = { viewModel.updateClickMode(it) }
+                }
             )
 
-            // 3. GitHub Auto-Updater Card (Instant Notification & 1-Click Update)
+            // 3. GitHub Auto-Updater Card
             GitHubUpdateCard(
                 githubUrl = githubUrl,
                 autoCheckUpdates = autoCheckUpdates,
@@ -290,6 +300,23 @@ fun AutoClickerMainScreen(viewModel: MainViewModel) {
 
             Spacer(modifier = Modifier.height(16.dp))
         }
+    }
+
+    // Full Advanced Script Editor Dialog
+    editingScript?.let { script ->
+        ScriptEditorFullDialog(
+            script = script,
+            onDismiss = { viewModel.closeScriptEditor() },
+            onUpdateName = { viewModel.updateEditingScriptName(it) },
+            onUpdateCategory = { viewModel.updateEditingScriptCategory(it) },
+            onUpdateRepeat = { viewModel.updateEditingScriptRepeat(it) },
+            onUpdateLoopDelay = { viewModel.updateEditingScriptLoopDelay(it) },
+            onUpdateStopTimer = { viewModel.updateEditingScriptStopTimer(it) },
+            onUpdatePoint = { idx, pt -> viewModel.updateEditingScriptPoint(idx, pt) },
+            onAddPoint = { viewModel.addPointToEditingScript() },
+            onRemovePoint = { viewModel.removePointFromEditingScript(it) },
+            onSave = { viewModel.saveEditingScript() }
+        )
     }
 
     // Update Result Dialogs
@@ -357,16 +384,17 @@ fun HeaderSection(
                     }
                     Column {
                         Text(
-                            text = "Auto Clicker",
+                            text = "Auto Clicker Đa Thể Loại",
                             style = MaterialTheme.typography.titleLarge.copy(
                                 fontWeight = FontWeight.Bold,
                                 color = TextPrimary
                             )
                         )
                         Text(
-                            text = "Nút nổi Game & Auto-Updater",
+                            text = "🌾 Trồng trọt • 🎣 Câu cá • ⚔️ Đánh quái • ⛏️ Đào khoáng",
                             style = MaterialTheme.typography.bodySmall.copy(
-                                color = BrightCyan
+                                color = BrightCyan,
+                                fontSize = 11.sp
                             )
                         )
                     }
@@ -386,7 +414,6 @@ fun HeaderSection(
                 }
             }
 
-            // Real-time Status Badge
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -416,7 +443,7 @@ fun HeaderSection(
                     )
                     Text(
                         text = when {
-                            isClicking -> "Đang tự động click liên tục..."
+                            isClicking -> "Đang tự động thực thi kịch bản..."
                             isOverlayActive -> "Bảng điều khiển nổi đang chạy đè màn hình"
                             else -> "Trạng thái: Chưa kích hoạt"
                         },
@@ -489,7 +516,6 @@ fun PermissionsCard(
                 )
             }
 
-            // 1. Accessibility Service
             PermissionItem(
                 title = "1. Dịch vụ Trợ năng (Accessibility)",
                 description = "Bắt buộc để ứng dụng tự động thực hiện thao tác chạm (dispatchGesture) đè lên Game.",
@@ -501,10 +527,9 @@ fun PermissionsCard(
 
             Divider(color = DarkNavyCardBorder)
 
-            // 2. SYSTEM_ALERT_WINDOW (Overlay)
             PermissionItem(
                 title = "2. Vẽ đè lên ứng dụng khác (Overlay)",
-                description = "Bắt buộc để hiển thị nút Bắt đầu / Tạm dừng và các điểm chấm ngắm tròn trên Game.",
+                description = "Bắt buộc để hiển thị nút Bắt đầu / Tạm dừng và các điểm ngắm kịch bản trên Game.",
                 isGranted = isOverlayGranted,
                 actionLabel = if (isOverlayGranted) "Đã cấp quyền" else "Cấp quyền Cửa sổ nổi",
                 onClick = onOpenOverlay,
@@ -513,7 +538,6 @@ fun PermissionsCard(
 
             Divider(color = DarkNavyCardBorder)
 
-            // 3. REQUEST_INSTALL_PACKAGES
             PermissionItem(
                 title = "3. Cài đặt bản cập nhật APK (GitHub Update)",
                 description = "Cho phép app tự động tải file APK phiên bản mới từ GitHub về và cài đặt trực tiếp.",
@@ -606,22 +630,28 @@ fun PermissionItem(
 }
 
 // ==========================================
-// 3. AUTO CLICK CONTROL CARD
+// 3. SCRIPT MANAGEMENT CARD (MULTI-CATEGORIES)
 // ==========================================
 
-@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
-fun AutoClickControlCard(
+fun ScriptManagerCard(
+    scriptsList: List<AutoClickScript>,
+    activeScript: AutoClickScript,
+    selectedCategoryFilter: ScriptCategory?,
     isOverlayActive: Boolean,
-    isClicking: Boolean,
-    intervalMs: Long,
-    repeatCount: Int,
-    clickMode: ClickMode,
-    onToggleOverlay: () -> Unit,
-    onIntervalChanged: (Long) -> Unit,
-    onRepeatCountChanged: (Int) -> Unit,
-    onModeChanged: (ClickMode) -> Unit
+    onSelectCategoryFilter: (ScriptCategory?) -> Unit,
+    onSelectScript: (AutoClickScript) -> Unit,
+    onEditScript: (AutoClickScript) -> Unit,
+    onCreateNewScript: () -> Unit,
+    onDeleteScript: (String) -> Unit,
+    onToggleOverlay: () -> Unit
 ) {
+    val filteredScripts = if (selectedCategoryFilter == null) {
+        scriptsList
+    } else {
+        scriptsList.filter { it.category == selectedCategoryFilter }
+    }
+
     Card(
         colors = CardDefaults.cardColors(containerColor = DarkNavyCard),
         border = BorderStroke(1.dp, DarkNavyCardBorder),
@@ -635,25 +665,36 @@ fun AutoClickControlCard(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    imageVector = Icons.Default.Layers,
-                    contentDescription = null,
-                    tint = ElectricCyan,
-                    modifier = Modifier.size(20.dp)
-                )
-                Text(
-                    text = "Bảng Điều Khiển Nổi & Tốc Độ Click",
-                    style = MaterialTheme.typography.titleMedium.copy(
-                        fontWeight = FontWeight.Bold,
-                        color = TextPrimary
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Layers,
+                        contentDescription = null,
+                        tint = ElectricCyan,
+                        modifier = Modifier.size(20.dp)
                     )
-                )
+                    Text(
+                        text = "Kho Kịch Bản Auto Game",
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontWeight = FontWeight.Bold,
+                            color = TextPrimary
+                        )
+                    )
+                }
+
+                TextButton(onClick = onCreateNewScript) {
+                    Icon(Icons.Default.Add, contentDescription = null, tint = BrightCyan, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Thêm mới", color = BrightCyan, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                }
             }
 
-            // Big Launch / Stop Overlay Button
             Button(
                 onClick = onToggleOverlay,
                 colors = ButtonDefaults.buttonColors(
@@ -672,62 +713,607 @@ fun AutoClickControlCard(
                 )
                 Spacer(modifier = Modifier.width(10.dp))
                 Text(
-                    text = if (isOverlayActive) "TẮT BẢNG ĐIỀU KHIỂN NỔI" else "BẬT BẢNG ĐIỀU KHIỂN NỔI (OVERLAY)",
+                    text = if (isOverlayActive) "TẮT BẢNG ĐIỀU KHIỂN NỔI" else "BẬT OVERLAY (${activeScript.name.take(20)})",
                     style = MaterialTheme.typography.bodyLarge.copy(
                         fontWeight = FontWeight.Bold
                     )
                 )
             }
 
-            Divider(color = DarkNavyCardBorder)
-
-            // Mode Selector
-            Text(
-                text = "Chế độ Auto Click",
-                style = MaterialTheme.typography.bodyMedium.copy(
-                    fontWeight = FontWeight.SemiBold,
-                    color = TextPrimary
-                )
-            )
-
+            // Category Filter Chips
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                FilterChip(
-                    selected = clickMode == ClickMode.SINGLE_POINT,
-                    onClick = { onModeChanged(ClickMode.SINGLE_POINT) },
-                    label = { Text("1 Điểm chạm") },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = ElectricCyan.copy(alpha = 0.2f),
-                        selectedLabelColor = ElectricCyan
-                    ),
-                    border = FilterChipDefaults.filterChipBorder(
-                        borderColor = if (clickMode == ClickMode.SINGLE_POINT) ElectricCyan else DarkNavyCardBorder,
-                        enabled = true,
-                        selected = clickMode == ClickMode.SINGLE_POINT
-                    ),
-                    modifier = Modifier.weight(1f)
-                )
+                // All Filter
+                val isAllSelected = selectedCategoryFilter == null
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (isAllSelected) ElectricCyan.copy(alpha = 0.25f) else SurfaceHighlight)
+                        .border(1.dp, if (isAllSelected) ElectricCyan else DarkNavyCardBorder, RoundedCornerShape(8.dp))
+                        .clickable { onSelectCategoryFilter(null) }
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                ) {
+                    Text(
+                        text = "⭐ Tất cả (${scriptsList.size})",
+                        fontSize = 11.sp,
+                        color = if (isAllSelected) ElectricCyan else TextSecondary,
+                        fontWeight = if (isAllSelected) FontWeight.Bold else FontWeight.Normal
+                    )
+                }
 
-                FilterChip(
-                    selected = clickMode == ClickMode.MULTI_POINT,
-                    onClick = { onModeChanged(ClickMode.MULTI_POINT) },
-                    label = { Text("Đa điểm (Tuần tự)") },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = ElectricCyan.copy(alpha = 0.2f),
-                        selectedLabelColor = ElectricCyan
-                    ),
-                    border = FilterChipDefaults.filterChipBorder(
-                        borderColor = if (clickMode == ClickMode.MULTI_POINT) ElectricCyan else DarkNavyCardBorder,
-                        enabled = true,
-                        selected = clickMode == ClickMode.MULTI_POINT
-                    ),
-                    modifier = Modifier.weight(1f)
-                )
+                // Category Chips
+                ScriptCategory.values().forEach { cat ->
+                    val isCatSelected = selectedCategoryFilter == cat
+                    val count = scriptsList.count { it.category == cat }
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (isCatSelected) BrightCyan.copy(alpha = 0.25f) else SurfaceHighlight)
+                            .border(1.dp, if (isCatSelected) BrightCyan else DarkNavyCardBorder, RoundedCornerShape(8.dp))
+                        .clickable { onSelectCategoryFilter(cat) }
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                    ) {
+                        Text(
+                            text = "${cat.iconEmoji} ${cat.displayName} ($count)",
+                            fontSize = 11.sp,
+                            color = if (isCatSelected) BrightCyan else TextSecondary,
+                            fontWeight = if (isCatSelected) FontWeight.Bold else FontWeight.Normal
+                        )
+                    }
+                }
             }
 
-            // Interval Speed Presets
+            Divider(color = DarkNavyCardBorder)
+
+            if (filteredScripts.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 16.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "Chưa có kịch bản trong thể loại này. Bấm '+ Thêm mới' để tạo!",
+                        color = TextSecondary,
+                        fontSize = 12.sp
+                    )
+                }
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    filteredScripts.forEach { script ->
+                        val isSelected = script.id == activeScript.id
+                        val repeatText = if (script.repeatCount == 0) "Vô hạn" else "${script.repeatCount} vòng"
+                        val timerText = if (script.stopTimerSeconds > 0) " • Tự dừng: ${script.stopTimerSeconds / 60}p" else ""
+
+                        Surface(
+                            color = if (isSelected) SurfaceHighlight else DarkNavyBg,
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(
+                                1.dp,
+                                if (isSelected) ElectricCyan else DarkNavyCardBorder
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onSelectScript(script) }
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Text(
+                                            text = script.name,
+                                            style = MaterialTheme.typography.bodyMedium.copy(
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (isSelected) ElectricCyan else TextPrimary
+                                            )
+                                        )
+                                        if (isSelected) {
+                                            Surface(
+                                                color = ElectricCyan.copy(alpha = 0.2f),
+                                                shape = RoundedCornerShape(6.dp)
+                                            ) {
+                                                Text(
+                                                    text = "ĐANG CHỌN",
+                                                    color = ElectricCyan,
+                                                    fontSize = 9.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        text = "${script.category.iconEmoji} ${script.points.size} điểm • Lặp: $repeatText • Nghỉ: ${script.loopDelayMs}ms$timerText",
+                                        style = MaterialTheme.typography.bodySmall.copy(
+                                            color = TextSecondary,
+                                            fontSize = 11.sp
+                                        )
+                                    )
+                                }
+
+                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    IconButton(
+                                        onClick = { onEditScript(script) },
+                                        modifier = Modifier.size(36.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Edit,
+                                            contentDescription = "Chỉnh sửa kịch bản",
+                                            tint = BrightCyan,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+
+                                    if (scriptsList.size > 1) {
+                                        IconButton(
+                                            onClick = { onDeleteScript(script.id) },
+                                            modifier = Modifier.size(36.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Delete,
+                                                contentDescription = "Xóa kịch bản",
+                                                tint = ErrorRed.copy(alpha = 0.7f),
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            OutlinedButton(
+                onClick = { onEditScript(activeScript) },
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, BrightCyan),
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = BrightCyan,
+                    containerColor = BrightCyan.copy(alpha = 0.08f)
+                ),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Chỉnh Sửa Toàn Diện '${activeScript.name.take(22)}'", fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+// ==========================================
+// 4. ADVANCED SCRIPT EDITOR FULL DIALOG
+// ==========================================
+
+@Composable
+fun ScriptEditorFullDialog(
+    script: AutoClickScript,
+    onDismiss: () -> Unit,
+    onUpdateName: (String) -> Unit,
+    onUpdateCategory: (ScriptCategory) -> Unit,
+    onUpdateRepeat: (Int) -> Unit,
+    onUpdateLoopDelay: (Long) -> Unit,
+    onUpdateStopTimer: (Long) -> Unit,
+    onUpdatePoint: (Int, ScriptPoint) -> Unit,
+    onAddPoint: () -> Unit,
+    onRemovePoint: (Int) -> Unit,
+    onSave: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            color = DarkNavyBg,
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 12.dp, vertical = 16.dp),
+            shape = RoundedCornerShape(20.dp),
+            border = BorderStroke(1.5.dp, ElectricCyan)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp)
+            ) {
+                // Header
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Edit,
+                            contentDescription = null,
+                            tint = ElectricCyan,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Text(
+                            text = "Trình Chỉnh Sửa Kịch Bản",
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = TextPrimary
+                            )
+                        )
+                    }
+
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = "Đóng", tint = TextSecondary)
+                    }
+                }
+
+                Divider(color = DarkNavyCardBorder, modifier = Modifier.padding(vertical = 8.dp))
+
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    // 1. Script Name Field
+                    OutlinedTextField(
+                        value = script.name,
+                        onValueChange = onUpdateName,
+                        label = { Text("Tên Kịch Bản") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = ElectricCyan,
+                            unfocusedBorderColor = DarkNavyCardBorder,
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    // 1B. Thể Loại Auto (Category)
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(Icons.Default.Category, contentDescription = null, tint = BrightCyan, modifier = Modifier.size(16.dp))
+                            Text("Thể loại Auto:", fontSize = 12.sp, color = TextPrimary, fontWeight = FontWeight.Bold)
+                        }
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            ScriptCategory.values().forEach { cat ->
+                                val isSelected = script.category == cat
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(if (isSelected) BrightCyan.copy(alpha = 0.25f) else SurfaceHighlight)
+                                        .border(1.dp, if (isSelected) BrightCyan else DarkNavyCardBorder, RoundedCornerShape(8.dp))
+                                        .clickable { onUpdateCategory(cat) }
+                                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                                ) {
+                                    Text(
+                                        text = "${cat.iconEmoji} ${cat.displayName}",
+                                        fontSize = 11.sp,
+                                        color = if (isSelected) BrightCyan else TextSecondary,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // 2. LOOP REPEAT & STOP TIMER & LOOP DELAY CARD
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = DarkNavyCard),
+                        shape = RoundedCornerShape(14.dp),
+                        border = BorderStroke(1.dp, DarkNavyCardBorder),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(Icons.Default.Loop, contentDescription = null, tint = BrightCyan, modifier = Modifier.size(18.dp))
+                                Text(
+                                    text = "Cài Đặt Số Vòng Lặp & Thời Gian Nghỉ",
+                                    style = MaterialTheme.typography.bodyMedium.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        color = BrightCyan
+                                    )
+                                )
+                            }
+
+                            // 2A. SỐ VÒNG LẶP (REPEAT COUNT)
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Số vòng lặp (0 = Vô hạn):",
+                                        style = MaterialTheme.typography.bodySmall.copy(color = TextPrimary)
+                                    )
+                                    Text(
+                                        text = if (script.repeatCount == 0) "Vô hạn" else "${script.repeatCount} vòng",
+                                        style = MaterialTheme.typography.bodyMedium.copy(
+                                            fontWeight = FontWeight.Bold,
+                                            color = EmeraldGreen
+                                        )
+                                    )
+                                }
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    listOf(0 to "Vô hạn", 5 to "5", 20 to "20", 50 to "50", 100 to "100", 500 to "500", 1000 to "1000").forEach { (count, label) ->
+                                        val isSelected = script.repeatCount == count
+                                        Box(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .clip(RoundedCornerShape(6.dp))
+                                                .background(
+                                                    if (isSelected) EmeraldGreen.copy(alpha = 0.25f)
+                                                    else SurfaceHighlight
+                                                )
+                                                .border(
+                                                    1.dp,
+                                                    if (isSelected) EmeraldGreen else DarkNavyCardBorder,
+                                                    RoundedCornerShape(6.dp)
+                                                )
+                                                .clickable { onUpdateRepeat(count) }
+                                                .padding(vertical = 5.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(
+                                                text = label,
+                                                style = MaterialTheme.typography.labelSmall.copy(
+                                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                                    color = if (isSelected) EmeraldGreen else TextSecondary,
+                                                    fontSize = 10.sp
+                                                )
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 2B. THỜI GIAN NGHỈ GIỮA CÁC VÒNG (LOOP DELAY)
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Thời gian nghỉ giữa các vòng:",
+                                        style = MaterialTheme.typography.bodySmall.copy(color = TextPrimary)
+                                    )
+                                    Text(
+                                        text = "${script.loopDelayMs}ms",
+                                        style = MaterialTheme.typography.bodyMedium.copy(
+                                            fontWeight = FontWeight.Bold,
+                                            color = ElectricCyan
+                                        )
+                                    )
+                                }
+
+                                Slider(
+                                    value = script.loopDelayMs.toFloat(),
+                                    onValueChange = { onUpdateLoopDelay(it.toLong()) },
+                                    valueRange = 0f..5000f,
+                                    colors = SliderDefaults.colors(
+                                        thumbColor = ElectricCyan,
+                                        activeTrackColor = ElectricCyan,
+                                        inactiveTrackColor = SurfaceHighlight
+                                    )
+                                )
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    listOf(0L to "0ms", 100L to "100ms", 500L to "500ms", 1000L to "1s", 2000L to "2s", 5000L to "5s").forEach { (ms, label) ->
+                                        val isSelected = script.loopDelayMs == ms
+                                        Box(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .clip(RoundedCornerShape(6.dp))
+                                                .background(
+                                                    if (isSelected) ElectricCyan.copy(alpha = 0.25f)
+                                                    else SurfaceHighlight
+                                                )
+                                                .border(
+                                                    1.dp,
+                                                    if (isSelected) ElectricCyan else DarkNavyCardBorder,
+                                                    RoundedCornerShape(6.dp)
+                                                )
+                                                .clickable { onUpdateLoopDelay(ms) }
+                                                .padding(vertical = 4.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(
+                                                text = label,
+                                                fontSize = 10.sp,
+                                                color = if (isSelected) ElectricCyan else TextSecondary,
+                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 2C. HẸN GIỜ TỰ ĐỘNG DỪNG (STOP TIMER)
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                val currentMinutes = script.stopTimerSeconds / 60
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Icon(Icons.Default.HourglassTop, contentDescription = null, tint = WarningAmber, modifier = Modifier.size(14.dp))
+                                        Text(
+                                            text = "Hẹn giờ tự động dừng:",
+                                            style = MaterialTheme.typography.bodySmall.copy(color = TextPrimary)
+                                        )
+                                    }
+                                    Text(
+                                        text = if (script.stopTimerSeconds == 0L) "Chạy liên tục" else "Tự dừng sau $currentMinutes phút",
+                                        style = MaterialTheme.typography.bodyMedium.copy(
+                                            fontWeight = FontWeight.Bold,
+                                            color = WarningAmber
+                                        )
+                                    )
+                                }
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    listOf(0L to "Tắt", 1L to "1p", 5L to "5p", 15L to "15p", 30L to "30p", 60L to "1h").forEach { (mins, label) ->
+                                        val isSelected = currentMinutes == mins
+                                        Box(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .clip(RoundedCornerShape(6.dp))
+                                                .background(
+                                                    if (isSelected) WarningAmber.copy(alpha = 0.25f)
+                                                    else SurfaceHighlight
+                                                )
+                                                .border(
+                                                    1.dp,
+                                                    if (isSelected) WarningAmber else DarkNavyCardBorder,
+                                                    RoundedCornerShape(6.dp)
+                                                )
+                                                .clickable { onUpdateStopTimer(mins * 60L) }
+                                                .padding(vertical = 4.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(
+                                                text = label,
+                                                fontSize = 10.sp,
+                                                color = if (isSelected) WarningAmber else TextSecondary,
+                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // 3. TARGET POINTS LIST & TIMINGS
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Danh sách Điểm Chạm (${script.points.size} điểm):",
+                            style = MaterialTheme.typography.bodyMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = TextPrimary
+                            )
+                        )
+
+                        Button(
+                            onClick = onAddPoint,
+                            colors = ButtonDefaults.buttonColors(containerColor = SurfaceHighlight),
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(1.dp, ElectricCyan)
+                        ) {
+                            Icon(Icons.Default.Add, contentDescription = null, tint = ElectricCyan, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Thêm Điểm", color = ElectricCyan, fontSize = 12.sp)
+                        }
+                    }
+
+                    script.points.forEachIndexed { index, point ->
+                        PointTimingEditorCard(
+                            point = point,
+                            canDelete = script.points.size > 1,
+                            onUpdate = { updatedPoint -> onUpdatePoint(index, updatedPoint) },
+                            onDelete = { onRemovePoint(index) }
+                        )
+                    }
+                }
+
+                Divider(color = DarkNavyCardBorder, modifier = Modifier.padding(vertical = 8.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Hủy", color = TextSecondary)
+                    }
+
+                    Button(
+                        onClick = onSave,
+                        colors = ButtonDefaults.buttonColors(containerColor = EmeraldGreen),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.weight(2f)
+                    ) {
+                        Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Lưu Kịch Bản Ngay", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun PointTimingEditorCard(
+    point: ScriptPoint,
+    canDelete: Boolean,
+    onUpdate: (ScriptPoint) -> Unit,
+    onDelete: () -> Unit
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = DarkNavyCard),
+        border = BorderStroke(1.dp, DarkNavyCardBorder),
+        shape = RoundedCornerShape(14.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -735,118 +1321,168 @@ fun AutoClickControlCard(
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Speed,
-                        contentDescription = null,
-                        tint = BrightCyan,
-                        modifier = Modifier.size(16.dp)
-                    )
+                    Box(
+                        modifier = Modifier
+                            .size(28.dp)
+                            .clip(CircleShape)
+                            .background(ElectricCyan.copy(alpha = 0.2f))
+                            .border(1.dp, ElectricCyan, CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "${point.id}",
+                            color = ElectricCyan,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp
+                        )
+                    }
+
                     Text(
-                        text = "Khoảng cách click:",
+                        text = point.name,
                         style = MaterialTheme.typography.bodyMedium.copy(
-                            fontWeight = FontWeight.SemiBold,
+                            fontWeight = FontWeight.Bold,
                             color = TextPrimary
                         )
                     )
                 }
 
-                Text(
-                    text = "${intervalMs}ms (${if (intervalMs > 0) 1000 / intervalMs else 0} lần/s)",
-                    style = MaterialTheme.typography.bodyMedium.copy(
-                        fontWeight = FontWeight.Bold,
-                        color = ElectricCyan
-                    )
-                )
-            }
-
-            FlowRow(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                val presets = listOf(20L, 50L, 100L, 200L, 500L, 1000L)
-                presets.forEach { speed ->
-                    val isSelected = intervalMs == speed
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(
-                                if (isSelected) ElectricCyan.copy(alpha = 0.25f)
-                                else SurfaceHighlight
-                            )
-                            .border(
-                                1.dp,
-                                if (isSelected) ElectricCyan else DarkNavyCardBorder,
-                                RoundedCornerShape(8.dp)
-                            )
-                            .clickable { onIntervalChanged(speed) }
-                            .padding(horizontal = 12.dp, vertical = 6.dp)
-                    ) {
-                        Text(
-                            text = "${speed}ms",
-                            style = MaterialTheme.typography.labelMedium.copy(
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                color = if (isSelected) ElectricCyan else TextSecondary
-                            )
-                        )
+                if (canDelete) {
+                    IconButton(onClick = onDelete, modifier = Modifier.size(28.dp)) {
+                        Icon(Icons.Default.Delete, contentDescription = "Xóa", tint = ErrorRed.copy(alpha = 0.7f), modifier = Modifier.size(16.dp))
                     }
                 }
             }
 
-            // Interval Slider
-            Slider(
-                value = intervalMs.toFloat(),
-                onValueChange = { onIntervalChanged(it.toLong()) },
-                valueRange = 10f..2000f,
-                colors = SliderDefaults.colors(
-                    thumbColor = ElectricCyan,
-                    activeTrackColor = ElectricCyan,
-                    inactiveTrackColor = SurfaceHighlight
-                )
-            )
+            // 1. Delay After Click
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("Thời gian chờ sau khi bấm (delay sau):", fontSize = 12.sp, color = TextSecondary)
+                    Text("${point.delayAfterMs}ms", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = BrightCyan)
+                }
 
-            // Repeat Count Configuration
-            Text(
-                text = "Số lần nhấp tối đa:",
-                style = MaterialTheme.typography.bodyMedium.copy(
-                    fontWeight = FontWeight.SemiBold,
-                    color = TextPrimary
-                )
-            )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    listOf(20L, 50L, 100L, 200L, 500L, 1000L).forEach { speed ->
+                        val isSelected = point.delayAfterMs == speed
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(
+                                    if (isSelected) BrightCyan.copy(alpha = 0.25f)
+                                    else SurfaceHighlight
+                                )
+                                .border(
+                                    1.dp,
+                                    if (isSelected) BrightCyan else DarkNavyCardBorder,
+                                    RoundedCornerShape(6.dp)
+                                )
+                                .clickable { onUpdate(point.copy(delayAfterMs = speed)) }
+                                .padding(vertical = 4.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "${speed}ms",
+                                fontSize = 10.sp,
+                                color = if (isSelected) BrightCyan else TextSecondary,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                            )
+                        }
+                    }
+                }
+            }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                val repeatPresets = listOf(0 to "Vô hạn", 100 to "100 lần", 500 to "500 lần", 1000 to "1000 lần")
-                repeatPresets.forEach { (count, label) ->
-                    val isSelected = repeatCount == count
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(
-                                if (isSelected) EmeraldGreen.copy(alpha = 0.25f)
-                                else SurfaceHighlight
+            // 2. Click Duration
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("Thời gian giữ click (touch duration):", fontSize = 12.sp, color = TextSecondary)
+                    Text("${point.clickDurationMs}ms", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = WarningAmber)
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    listOf(20L to "20ms", 40L to "40ms", 100L to "100ms", 500L to "500ms").forEach { (dur, label) ->
+                        val isSelected = point.clickDurationMs == dur
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(
+                                    if (isSelected) WarningAmber.copy(alpha = 0.25f)
+                                    else SurfaceHighlight
+                                )
+                                .border(
+                                    1.dp,
+                                    if (isSelected) WarningAmber else DarkNavyCardBorder,
+                                    RoundedCornerShape(6.dp)
+                                )
+                                .clickable { onUpdate(point.copy(clickDurationMs = dur)) }
+                                .padding(vertical = 4.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = label,
+                                fontSize = 10.sp,
+                                color = if (isSelected) WarningAmber else TextSecondary,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
                             )
-                            .border(
-                                1.dp,
-                                if (isSelected) EmeraldGreen else DarkNavyCardBorder,
-                                RoundedCornerShape(8.dp)
+                        }
+                    }
+                }
+            }
+
+            // 3. Delay Before Click
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("Thời gian chờ trước khi bấm (delay trước):", fontSize = 12.sp, color = TextSecondary)
+                    Text("${point.delayBeforeMs}ms", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = EmeraldGreen)
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    listOf(0L to "0ms", 50L to "50ms", 100L to "100ms", 200L to "200ms", 500L to "500ms").forEach { (speed, label) ->
+                        val isSelected = point.delayBeforeMs == speed
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(
+                                    if (isSelected) EmeraldGreen.copy(alpha = 0.25f)
+                                    else SurfaceHighlight
+                                )
+                                .border(
+                                    1.dp,
+                                    if (isSelected) EmeraldGreen else DarkNavyCardBorder,
+                                    RoundedCornerShape(6.dp)
+                                )
+                                .clickable { onUpdate(point.copy(delayBeforeMs = speed)) }
+                                .padding(vertical = 4.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = label,
+                                fontSize = 10.sp,
+                                color = if (isSelected) EmeraldGreen else TextSecondary,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
                             )
-                            .clickable { onRepeatCountChanged(count) }
-                            .padding(vertical = 8.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = label,
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                color = if (isSelected) EmeraldGreen else TextSecondary
-                            )
-                        )
+                        }
                     }
                 }
             }
@@ -855,7 +1491,7 @@ fun AutoClickControlCard(
 }
 
 // ==========================================
-// 4. GITHUB UPDATE CARD
+// 5. GITHUB UPDATE CARD
 // ==========================================
 
 @Composable
@@ -909,7 +1545,6 @@ fun GitHubUpdateCard(
                 }
             }
 
-            // Feature Banner: Auto-Update Flow
             Surface(
                 color = SurfaceHighlight,
                 shape = RoundedCornerShape(12.dp),
@@ -930,7 +1565,7 @@ fun GitHubUpdateCard(
                         modifier = Modifier.size(20.dp)
                     )
                     Text(
-                        text = "Mỗi khi bạn cập nhật tính năng lên GitHub (Release hoặc version.json), app sẽ tự động thông báo và 1-chạm nâng cấp tính năng mới ngay lập tức!",
+                        text = "Mỗi khi bạn đẩy thêm tính năng hoặc kịch bản Auto mới lên GitHub, app sẽ tự thông báo và 1-chạm nâng cấp ngay!",
                         style = MaterialTheme.typography.bodySmall.copy(
                             color = TextPrimary,
                             lineHeight = 17.sp
@@ -939,7 +1574,6 @@ fun GitHubUpdateCard(
                 }
             }
 
-            // Toggle Auto-check on launch
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -989,7 +1623,6 @@ fun GitHubUpdateCard(
                 )
             }
 
-            // GitHub URL field (supports repo URL, release API, or raw json)
             OutlinedTextField(
                 value = githubUrl,
                 onValueChange = onUrlChanged,
@@ -1048,7 +1681,7 @@ fun GitHubUpdateCard(
 }
 
 // ==========================================
-// 5. INSTRUCTIONS CARD
+// 6. INSTRUCTIONS CARD
 // ==========================================
 
 @Composable
@@ -1066,7 +1699,7 @@ fun InstructionsCard() {
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text(
-                text = "📖 Cách Triển Khai Tính Năng Mới Lên GitHub",
+                text = "📖 Hệ Thống Auto Mở Rộng Cho Nhiều Game",
                 style = MaterialTheme.typography.titleMedium.copy(
                     fontWeight = FontWeight.Bold,
                     color = TextPrimary
@@ -1075,23 +1708,28 @@ fun InstructionsCard() {
 
             StepItem(
                 step = "1",
-                title = "Thêm tính năng và build file APK mới",
-                desc = "Khi code xong tính năng mới, bạn tăng versionCode trong app/build.gradle.kts và build file APK."
+                title = "🌾 Auto Nông Trại & Trồng Trọt",
+                desc = "Gieo hạt liên hoàn theo ô, tưới nước vườn đất, bón phân và thu hoạch nông sản tự động theo chu kỳ thời gian."
             )
             StepItem(
                 step = "2",
-                title = "Đăng bản mới lên GitHub",
-                desc = "Tạo một GitHub Release và đính kèm file APK, hoặc cập nhật versionCode và link APK trong file version.json trên GitHub."
+                title = "🎣 Auto Câu Cá & Kéo Phao",
+                desc = "Thả mồi câu, nhấp giữ giằng cá khi cắn câu và kéo cá lên bờ tự động."
             )
             StepItem(
                 step = "3",
-                title = "Ứng dụng tự động thông báo",
-                desc = "Điện thoại của bạn sẽ tự động quét thấy bản mới và hiển thị thông báo cập nhật ngay lập tức."
+                title = "⚔️ Auto Đánh Quái & Combo Kỹ Năng (RPG)",
+                desc = "Tự động kích hoạt chuỗi chiêu thức AOE/Stun, kết hợp bơm bình HP/Mana định kỳ."
             )
             StepItem(
                 step = "4",
-                title = "1-chạm cập nhật tính năng mới",
-                desc = "Chỉ cần nhấn 'Cập nhật ngay', ứng dụng sẽ tự động tải file APK về và mở cài đặt nâng cấp giữ nguyên mọi dữ liệu."
+                title = "⛏️ Auto Khai Thác & ⚡ Clicker Siêu Tốc",
+                desc = "Đập quặng khoáng, đổi công cụ hoặc tap siêu tốc phá giáp với tốc độ hàng chục click mỗi giây."
+            )
+            StepItem(
+                step = "5",
+                title = "🚀 Tự Động Cập Nhật Kịch Bản Mới Qua GitHub",
+                desc = "Khi bạn viết thêm kịch bản mới và push lên GitHub, ứng dụng của người dùng sẽ tự động nhận diện và cập nhật ngay lập tức!"
             )
         }
     }
@@ -1141,7 +1779,7 @@ fun StepItem(step: String, title: String, desc: String) {
 }
 
 // ==========================================
-// 6. UPDATE DIALOGS & ALERTS
+// 7. UPDATE DIALOGS & ALERTS
 // ==========================================
 
 @Composable
@@ -1217,7 +1855,7 @@ fun UpdateStateDialogs(
         is UpdateUiState.Downloading -> {
             val progress = updateState.progress
             AlertDialog(
-                onDismissRequest = { /* non-cancelable during download */ },
+                onDismissRequest = { },
                 containerColor = DarkNavyCard,
                 title = {
                     Text(
@@ -1244,13 +1882,6 @@ fun UpdateStateDialogs(
                             text = "Tiến độ tải: $progress%",
                             color = BrightCyan,
                             style = MaterialTheme.typography.bodyMedium,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Text(
-                            text = "Sau khi tải xong, ứng dụng sẽ tự động mở cài đặt để nâng cấp!",
-                            color = TextSecondary,
-                            style = MaterialTheme.typography.bodySmall,
                             textAlign = TextAlign.Center,
                             modifier = Modifier.fillMaxWidth()
                         )
@@ -1343,7 +1974,7 @@ fun UpdateStateDialogs(
 }
 
 // ==========================================
-// 7. GITHUB JSON HELP DIALOG
+// 8. GITHUB JSON HELP DIALOG
 // ==========================================
 
 @Composable
@@ -1354,8 +1985,8 @@ fun GitHubJsonHelpDialog(onDismiss: () -> Unit) {
   "versionCode": 2,
   "versionName": "1.1.0",
   "apkUrl": "https://github.com/your-username/your-repo/releases/download/v1.1.0/app-release.apk",
-  "releaseNotes": "- Thêm tính năng tự động phát hiện bản mới\n- Tối ưu tốc độ click game cực nhanh\n- Sửa lỗi đa điểm chạm",
-  "fileSize": "5.8 MB",
+  "releaseNotes": "- Thêm các chế độ Auto: Nông Trại, Câu Cá, Đánh Quái RPG, Đào Khoáng\n- Tùy chỉnh số vòng lặp & thời gian tự động dừng\n- Nút ⚙️ đổi nhanh cấu hình ngay trên Game",
+  "fileSize": "6.2 MB",
   "publishDate": "2026-08-19"
 }
     """.trimIndent()
@@ -1372,7 +2003,7 @@ fun GitHubJsonHelpDialog(onDismiss: () -> Unit) {
                 modifier = Modifier.verticalScroll(rememberScrollState())
             ) {
                 Text(
-                    "Tạo file version.json trên GitHub repository của bạn (hoặc GitHub Gist / GitHub Releases) với nội dung mẫu sau:",
+                    "Tạo file version.json trên GitHub repository của bạn với nội dung mẫu sau:",
                     color = TextSecondary,
                     style = MaterialTheme.typography.bodySmall
                 )
