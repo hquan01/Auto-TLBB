@@ -1,0 +1,6 @@
+{
+  "name": "Auto Clicker",
+  "description": "Ứng dụng Auto Clicker màn hình nổi đè lên Game với chế độ Click tự động và hệ thống Cập nhật tự động qua GitHub",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

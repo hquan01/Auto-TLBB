@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Auto Clicker</string>
+    <string name="accessibility_service_label">Auto Clicker - Dịch vụ Tự động Click</string>
+    <string name="accessibility_service_description">Dịch vụ này được sử dụng để thực hiện các cử chỉ chạm và nhấp tự động (dispatch gesture) lên màn hình trò chơi hoặc ứng dụng theo cấu hình của bạn.</string>
+</resources>
