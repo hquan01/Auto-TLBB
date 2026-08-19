@@ -61,7 +61,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Divider
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -525,7 +525,7 @@ fun PermissionsCard(
                 testTag = "btn_grant_accessibility"
             )
 
-            Divider(color = DarkNavyCardBorder)
+            HorizontalDivider(color = DarkNavyCardBorder)
 
             PermissionItem(
                 title = "2. Vẽ đè lên ứng dụng khác (Overlay)",
@@ -536,7 +536,7 @@ fun PermissionsCard(
                 testTag = "btn_grant_overlay"
             )
 
-            Divider(color = DarkNavyCardBorder)
+            HorizontalDivider(color = DarkNavyCardBorder)
 
             PermissionItem(
                 title = "3. Cài đặt bản cập nhật APK (GitHub Update)",
@@ -767,7 +767,7 @@ fun ScriptManagerCard(
                 }
             }
 
-            Divider(color = DarkNavyCardBorder)
+            HorizontalDivider(color = DarkNavyCardBorder)
 
             if (filteredScripts.isEmpty()) {
                 Box(
@@ -961,7 +961,7 @@ fun ScriptEditorFullDialog(
                     }
                 }
 
-                Divider(color = DarkNavyCardBorder, modifier = Modifier.padding(vertical = 8.dp))
+                HorizontalDivider(color = DarkNavyCardBorder, modifier = Modifier.padding(vertical = 8.dp))
 
                 Column(
                     modifier = Modifier
@@ -1267,7 +1267,7 @@ fun ScriptEditorFullDialog(
                     }
                 }
 
-                Divider(color = DarkNavyCardBorder, modifier = Modifier.padding(vertical = 8.dp))
+                HorizontalDivider(color = DarkNavyCardBorder, modifier = Modifier.padding(vertical = 8.dp))
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),

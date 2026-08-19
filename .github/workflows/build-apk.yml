@@ -10,6 +10,9 @@ jobs:
   build:
     name: Build Debug APK
     runs-on: ubuntu-latest
+    env:
+      GRADLE_OPTS: "-Djava.awt.headless=true"
+      _JAVA_OPTIONS: "-Djava.awt.headless=true"
 
     steps:
       - name: Checkout repository
