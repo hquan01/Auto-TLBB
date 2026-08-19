@@ -1071,7 +1071,7 @@ fun ScriptEditorFullDialog(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
-                                    listOf(0 to "Vô hạn", 5 to "5", 20 to "20", 50 to "50", 100 to "100", 500 to "500", 1000 to "1000").forEach { (count, label) ->
+                                    listOf(1 to "1 Lượt", 0 to "Vô hạn", 5 to "5", 20 to "20", 50 to "50", 100 to "100", 500 to "500").forEach { (count, label) ->
                                         val isSelected = script.repeatCount == count
                                         Box(
                                             modifier = Modifier

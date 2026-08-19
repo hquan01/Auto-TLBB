@@ -64,6 +64,10 @@ class FloatingViewService : Service() {
     // Floating Toolbar View
     private var floatingToolbar: View? = null
     private var toolbarParams: WindowManager.LayoutParams? = null
+    private var toolbarContainer: LinearLayout? = null
+    private var toolbarDragHandle: View? = null
+    private val toolbarActionViews = mutableListOf<View>()
+    private var playButtonView: TextView? = null
 
     // Target pointers list
     private val targetViews = mutableListOf<TargetPointerHolder>()
@@ -203,6 +207,7 @@ class FloatingViewService : Service() {
             }
             addView(dragBar)
         }
+        toolbarDragHandle = dragHandle
         container.addView(dragHandle)
 
         // --- Action Buttons ---
@@ -218,10 +223,13 @@ class FloatingViewService : Service() {
             textColor = "#FFFFFF",
             sizeDp = 42f
         )
+        playButtonView = playBtn
         playBtn.setOnClickListener {
             toggleClicker(playBtn)
         }
         actionsRow.addView(playBtn)
+
+        toolbarActionViews.clear()
 
         // 2. Add Target Point Button (+)
         val addBtn = createMenuButton(
@@ -250,6 +258,7 @@ class FloatingViewService : Service() {
             }
         }
         actionsRow.addView(addBtn)
+        toolbarActionViews.add(addBtn)
 
         // 3. Remove Target Point Button (−)
         val removeBtn = createMenuButton(
@@ -267,6 +276,7 @@ class FloatingViewService : Service() {
             }
         }
         actionsRow.addView(removeBtn)
+        toolbarActionViews.add(removeBtn)
 
         // 4. Quick Loop & Timer Settings Button (⚙️)
         val loopSettingsBtn = createMenuButton(
@@ -279,6 +289,7 @@ class FloatingViewService : Service() {
             showLoopAndTimerSettingsOverlay()
         }
         actionsRow.addView(loopSettingsBtn)
+        toolbarActionViews.add(loopSettingsBtn)
 
         // 5. Script Switcher & Presets Button (📂)
         val scriptBtn = createMenuButton(
@@ -291,6 +302,7 @@ class FloatingViewService : Service() {
             showScriptPickerOverlay()
         }
         actionsRow.addView(scriptBtn)
+        toolbarActionViews.add(scriptBtn)
 
         // 6. Save Current Positions Button (💾)
         val saveBtn = createMenuButton(
@@ -311,6 +323,7 @@ class FloatingViewService : Service() {
             }
         }
         actionsRow.addView(saveBtn)
+        toolbarActionViews.add(saveBtn)
 
         // 7. Close Button (✕)
         val closeBtn = createMenuButton(
@@ -324,6 +337,7 @@ class FloatingViewService : Service() {
             stopSelf()
         }
         actionsRow.addView(closeBtn)
+        toolbarActionViews.add(closeBtn)
 
         container.addView(actionsRow)
 
@@ -363,6 +377,7 @@ class FloatingViewService : Service() {
         }
 
         floatingToolbar = container
+        toolbarContainer = container
         windowManager.addView(floatingToolbar, toolbarParams)
     }
 
@@ -822,7 +837,7 @@ class FloatingViewService : Service() {
             orientation = LinearLayout.HORIZONTAL
             setPadding(0, dp(3f), 0, dp(6f))
         }
-        listOf(0 to "Vô hạn", 10 to "10 lần", 50 to "50 lần", 100 to "100 lần", 500 to "500").forEach { (count, label) ->
+        listOf(1 to "1 Lượt (Ko lặp)", 0 to "Vô hạn", 5 to "5 lần", 10 to "10 lần", 50 to "50 lần", 100 to "100 lần").forEach { (count, label) ->
             val chip = TextView(this).apply {
                 text = label
                 textSize = 10f
@@ -1170,6 +1185,49 @@ class FloatingViewService : Service() {
     // AUTO CLICK SCRIPT EXECUTION ENGINE
     // ==========================================
 
+    private fun updateToolbarUiState(running: Boolean) {
+        val dp = { value: Float ->
+            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value, resources.displayMetrics).toInt()
+        }
+
+        mainHandler.post {
+            toolbarActionViews.forEach { it.visibility = if (running) View.GONE else View.VISIBLE }
+            toolbarDragHandle?.visibility = if (running) View.GONE else View.VISIBLE
+
+            toolbarContainer?.let { container ->
+                if (running) {
+                    container.setPadding(dp(3f), dp(3f), dp(3f), dp(3f))
+                    val bg = GradientDrawable().apply {
+                        setColor(Color.parseColor("#EE0B132B"))
+                        cornerRadius = dp(24f).toFloat()
+                        setStroke(dp(1.5f), Color.parseColor("#EF4444"))
+                    }
+                    container.background = bg
+                } else {
+                    container.setPadding(dp(6f), dp(8f), dp(6f), dp(8f))
+                    val bg = GradientDrawable().apply {
+                        setColor(Color.parseColor("#EE0B132B"))
+                        cornerRadius = dp(24f).toFloat()
+                        setStroke(dp(1.5f), Color.parseColor("#00E5FF"))
+                    }
+                    container.background = bg
+                }
+
+                floatingToolbar?.let { view ->
+                    toolbarParams?.let { params ->
+                        try {
+                            windowManager.updateViewLayout(view, params)
+                        } catch (_: Exception) {}
+                    }
+                }
+            }
+
+            targetViews.forEach { holder ->
+                holder.timeBadge.visibility = if (running) View.GONE else View.VISIBLE
+            }
+        }
+    }
+
     private fun toggleClicker(playBtn: TextView) {
         val accessibilityService = AutoClickService.instance
         if (accessibilityService == null) {
@@ -1190,6 +1248,7 @@ class FloatingViewService : Service() {
             playBtn.text = "▶"
             (playBtn.background as? GradientDrawable)?.setColor(Color.parseColor("#10B981"))
             setTargetsTouchPassThrough(false)
+            updateToolbarUiState(false)
             Toast.makeText(this, "Đã tạm dừng kịch bản", Toast.LENGTH_SHORT).show()
         } else {
             dismissAllDialogs()
@@ -1197,6 +1256,7 @@ class FloatingViewService : Service() {
             playBtn.text = "⏸"
             (playBtn.background as? GradientDrawable)?.setColor(Color.parseColor("#EF4444"))
             setTargetsTouchPassThrough(true)
+            updateToolbarUiState(true)
             val repeatText = if (activeScript.repeatCount > 0) "${activeScript.repeatCount} vòng" else "Vô hạn"
             Toast.makeText(this, "Đang chạy '${activeScript.name}' ($repeatText)...", Toast.LENGTH_SHORT).show()
         }
@@ -1221,6 +1281,7 @@ class FloatingViewService : Service() {
                             playBtn.text = "▶"
                             (playBtn.background as? GradientDrawable)?.setColor(Color.parseColor("#10B981"))
                             setTargetsTouchPassThrough(false)
+                            updateToolbarUiState(false)
                             Toast.makeText(
                                 this@FloatingViewService,
                                 "⏰ Đã hết thời gian chạy kịch bản (${activeScript.stopTimerSeconds / 60} phút)!",
@@ -1231,13 +1292,13 @@ class FloatingViewService : Service() {
                     }
                 }
 
-                val targets = synchronized(targetViews) { targetViews.toList() }
+                val targets = synchronized(targetViews) { targetViews.sortedBy { it.point.id } }
                 if (targets.isEmpty()) {
                     delay(200)
                     continue
                 }
 
-                // Execute each point in sequence
+                // Execute each point in strict sequential order (1 -> 2 -> 3 -> 4 ...)
                 for (holder in targets) {
                     if (!isActive || !isPlaying) break
 
@@ -1290,16 +1351,22 @@ class FloatingViewService : Service() {
 
                 currentLoopCount++
 
-                // Check Repeat Count Limit
+                // Check Repeat Count Limit (1 = 1 lượt duy nhất không lặp lại)
                 if (activeScript.repeatCount > 0 && currentLoopCount >= activeScript.repeatCount) {
                     mainHandler.post {
                         stopClicking()
                         playBtn.text = "▶"
                         (playBtn.background as? GradientDrawable)?.setColor(Color.parseColor("#10B981"))
                         setTargetsTouchPassThrough(false)
+                        updateToolbarUiState(false)
+                        val completeMsg = if (activeScript.repeatCount == 1) {
+                            "🎉 Đã chạy xong 1 lượt theo thứ tự (1 ➔ ${targets.size}) và tự động dừng!"
+                        } else {
+                            "🎉 Đã hoàn thành chính xác ${activeScript.repeatCount} vòng lặp kịch bản!"
+                        }
                         Toast.makeText(
                             this@FloatingViewService,
-                            "🎉 Đã hoàn thành chính xác ${activeScript.repeatCount} vòng lặp kịch bản!",
+                            completeMsg,
                             Toast.LENGTH_LONG
                         ).show()
                     }
@@ -1327,6 +1394,7 @@ class FloatingViewService : Service() {
         clickJob?.cancel()
         clickJob = null
         setTargetsTouchPassThrough(false)
+        updateToolbarUiState(false)
     }
 
     override fun onDestroy() {

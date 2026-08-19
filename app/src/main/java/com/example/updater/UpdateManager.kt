@@ -68,7 +68,6 @@ class UpdateManager(private val context: Context) {
                 return@withContext Result.failure(IllegalArgumentException("Đường dẫn GitHub không được để trống"))
             }
 
-            // If user enters standard repo url like https://github.com/hquan01/Auto-TLBB
             val candidateUrls = if (trimmedUrl.contains("github.com/") && !trimmedUrl.contains("api.github.com") && !trimmedUrl.endsWith(".json")) {
                 val path = trimmedUrl.substringAfter("github.com/").trimEnd('/')
                 val parts = path.split('/')
@@ -114,7 +113,7 @@ class UpdateManager(private val context: Context) {
                             return@withContext Result.success(null) // Up to date
                         }
                     } else if (responseCode == HttpURLConnection.HTTP_NOT_FOUND) {
-                        lastError = Exception("Không tìm thấy file version.json hoặc Release trên GitHub (Mã 404). Hãy push file version.json lên nhánh main hoặc tạo GitHub Release.")
+                        lastError = Exception("Không tìm thấy file version.json trên GitHub (Mã HTTP: 404).")
                     } else {
                         lastError = Exception("Lỗi kết nối GitHub (Mã HTTP $responseCode)")
                     }
@@ -143,11 +142,9 @@ class UpdateManager(private val context: Context) {
             val releaseNotes = json.optString("body", "Bản phát hành tính năng mới trên GitHub.")
             val publishDate = json.optString("published_at", "")
 
-            // Parse version numbers
             val cleanVersion = tagName.removePrefix("v").removePrefix("V")
             val versionCode = extractVersionCode(cleanVersion)
 
-            // Look for .apk file in release assets
             var apkUrl = ""
             var fileSize: String? = null
             val assets: JSONArray = json.optJSONArray("assets") ?: JSONArray()
@@ -243,7 +240,8 @@ class UpdateManager(private val context: Context) {
     }
 
     /**
-     * Downloads the APK file from the provided URL with progress callbacks
+     * Downloads the APK file from the provided URL with progress callbacks.
+     * Supports automatic fallback checks if the given link returns 404.
      */
     suspend fun downloadApk(
         apkUrl: String,
@@ -256,76 +254,104 @@ class UpdateManager(private val context: Context) {
             )
         }
 
-        try {
-            val downloadDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
-                ?: context.filesDir
-            if (!downloadDir.exists()) {
-                downloadDir.mkdirs()
-            }
-            val outputFile = File(downloadDir, targetFileName)
-            if (outputFile.exists()) {
-                outputFile.delete()
-            }
+        // Build list of candidate APK URLs to try
+        val candidateUrls = mutableListOf(apkUrl)
+        if (apkUrl.contains("github.com/hquan01/Auto-TLBB")) {
+            // Also try raw branch or latest release
+            candidateUrls.add("https://raw.githubusercontent.com/hquan01/Auto-TLBB/main/app-debug.apk")
+            candidateUrls.add("https://github.com/hquan01/Auto-TLBB/releases/latest/download/app-debug.apk")
+        }
 
-            val url = URL(apkUrl)
-            val connection = (url.openConnection() as HttpURLConnection).apply {
-                connectTimeout = 20000
-                readTimeout = 30000
-                requestMethod = "GET"
-                instanceFollowRedirects = true
-                setRequestProperty("User-Agent", "AutoClicker-AppUpdate")
-            }
+        var lastHttpCode = 0
 
-            // Handle HTTP 301/302 Redirects for GitHub Releases
-            var redirectedConnection = connection
-            var redirectCount = 0
-            while (redirectedConnection.responseCode in listOf(301, 302, 303, 307, 308) && redirectCount < 5) {
-                val newUrl = redirectedConnection.getHeaderField("Location")
-                redirectedConnection.disconnect()
-                val nextUrl = URL(newUrl)
-                redirectedConnection = (nextUrl.openConnection() as HttpURLConnection).apply {
+        for (tryUrl in candidateUrls) {
+            try {
+                val downloadDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+                    ?: context.filesDir
+                if (!downloadDir.exists()) {
+                    downloadDir.mkdirs()
+                }
+                val outputFile = File(downloadDir, targetFileName)
+                if (outputFile.exists()) {
+                    outputFile.delete()
+                }
+
+                val url = URL(tryUrl)
+                val connection = (url.openConnection() as HttpURLConnection).apply {
                     connectTimeout = 20000
                     readTimeout = 30000
                     requestMethod = "GET"
+                    instanceFollowRedirects = true
                     setRequestProperty("User-Agent", "AutoClicker-AppUpdate")
                 }
-                redirectCount++
-            }
 
-            val responseCode = redirectedConnection.responseCode
-            if (responseCode != HttpURLConnection.HTTP_OK) {
-                return@withContext Result.failure(
-                    Exception("Không thể tải file APK từ GitHub (Mã HTTP: $responseCode)")
-                )
-            }
-
-            val fileLength = redirectedConnection.contentLength
-            val inputStream = redirectedConnection.inputStream
-            val outputStream = FileOutputStream(outputFile)
-
-            val buffer = ByteArray(8192)
-            var totalBytesRead = 0L
-            var bytesRead: Int
-
-            while (inputStream.read(buffer).also { bytesRead = it } != -1) {
-                outputStream.write(buffer, 0, bytesRead)
-                totalBytesRead += bytesRead
-
-                if (fileLength > 0) {
-                    val progressPercent = ((totalBytesRead * 100) / fileLength).toInt()
-                    onProgress(progressPercent.coerceIn(0, 100))
+                // Handle HTTP 301/302 Redirects for GitHub Releases
+                var redirectedConnection = connection
+                var redirectCount = 0
+                while (redirectedConnection.responseCode in listOf(301, 302, 303, 307, 308) && redirectCount < 5) {
+                    val newUrl = redirectedConnection.getHeaderField("Location")
+                    redirectedConnection.disconnect()
+                    val nextUrl = URL(newUrl)
+                    redirectedConnection = (nextUrl.openConnection() as HttpURLConnection).apply {
+                        connectTimeout = 20000
+                        readTimeout = 30000
+                        requestMethod = "GET"
+                        setRequestProperty("User-Agent", "AutoClicker-AppUpdate")
+                    }
+                    redirectCount++
                 }
+
+                val responseCode = redirectedConnection.responseCode
+                lastHttpCode = responseCode
+
+                if (responseCode == HttpURLConnection.HTTP_OK) {
+                    val fileLength = redirectedConnection.contentLength
+                    val inputStream = redirectedConnection.inputStream
+                    val outputStream = FileOutputStream(outputFile)
+
+                    val buffer = ByteArray(8192)
+                    var totalBytesRead = 0L
+                    var bytesRead: Int
+
+                    while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                        outputStream.write(buffer, 0, bytesRead)
+                        totalBytesRead += bytesRead
+
+                        if (fileLength > 0) {
+                            val progressPercent = ((totalBytesRead * 100) / fileLength).toInt()
+                            onProgress(progressPercent.coerceIn(0, 100))
+                        }
+                    }
+
+                    outputStream.flush()
+                    outputStream.close()
+                    inputStream.close()
+                    redirectedConnection.disconnect()
+
+                    return@withContext Result.success(outputFile)
+                } else {
+                    redirectedConnection.disconnect()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed downloading candidate: $tryUrl", e)
             }
+        }
 
-            outputStream.flush()
-            outputStream.close()
-            inputStream.close()
-            redirectedConnection.disconnect()
-
-            Result.success(outputFile)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to download APK from $apkUrl", e)
-            Result.failure(e)
+        if (lastHttpCode == HttpURLConnection.HTTP_NOT_FOUND) {
+            return@withContext Result.failure(
+                Exception(
+                    "Không tìm thấy file APK trên GitHub (Mã HTTP: 404).\n\n" +
+                    "Nguyên nhân: Đường link APK chưa tồn tại hoặc bạn chưa upload file .apk lên GitHub Releases.\n\n" +
+                    "Cách khắc phục:\n" +
+                    "1. Vào https://github.com/hquan01/Auto-TLBB/releases\n" +
+                    "2. Bấm 'Draft a new release' và đính kèm file .apk vào mục Assets.\n" +
+                    "3. Hoặc cập nhật link 'apkUrl' trực tiếp trong file version.json."
+                )
+            )
+        } else {
+            return@withContext Result.failure(
+                Exception("Không thể tải file APK từ GitHub (Mã HTTP: $lastHttpCode)")
+            )
         }
     }
 
