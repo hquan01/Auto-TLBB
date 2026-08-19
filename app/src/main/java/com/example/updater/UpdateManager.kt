@@ -57,74 +57,76 @@ class UpdateManager(private val context: Context) {
 
     /**
      * Checks for updates by fetching and parsing either:
-     * 1. A GitHub Release API endpoint (e.g. https://api.github.com/repos/owner/repo/releases/latest)
-     * 2. A direct GitHub raw JSON file (e.g. https://raw.githubusercontent.com/owner/repo/main/version.json)
-     * 3. A standard GitHub repo URL (e.g. https://github.com/owner/repo)
+     * 1. A GitHub raw JSON file (e.g. https://raw.githubusercontent.com/hquan01/Auto-TLBB/main/version.json)
+     * 2. A standard GitHub repo URL (e.g. https://github.com/hquan01/Auto-TLBB)
+     * 3. A GitHub Release API endpoint (e.g. https://api.github.com/repos/hquan01/Auto-TLBB/releases/latest)
      */
     suspend fun checkForUpdate(sourceUrl: String): Result<AppUpdateInfo?> = withContext(Dispatchers.IO) {
         try {
             val trimmedUrl = sourceUrl.trim()
             if (trimmedUrl.isBlank()) {
-                return@withContext Result.failure(IllegalArgumentException("Đường dẫn GitHub không hợp lệ"))
+                return@withContext Result.failure(IllegalArgumentException("Đường dẫn GitHub không được để trống"))
             }
 
-            // Normalize GitHub Repo URL to GitHub Releases API if needed
-            val targetUrl = normalizeGitHubUrl(trimmedUrl)
-
-            val url = URL(targetUrl)
-            val connection = (url.openConnection() as HttpURLConnection).apply {
-                connectTimeout = 12000
-                readTimeout = 12000
-                requestMethod = "GET"
-                setRequestProperty("Accept", "application/vnd.github.v3+json, application/json")
-                setRequestProperty("User-Agent", "AutoClicker-AppUpdate")
-            }
-
-            val responseCode = connection.responseCode
-            if (responseCode != HttpURLConnection.HTTP_OK) {
-                return@withContext Result.failure(Exception("Lỗi kết nối GitHub (Mã HTTP $responseCode)"))
-            }
-
-            val jsonString = connection.inputStream.bufferedReader().use { it.readText() }
-            val updateInfo = parseUpdateResponse(jsonString)
-
-            val currentVersionCode = getCurrentAppVersionCode()
-            Log.d(TAG, "Current Version: $currentVersionCode, Remote Version: ${updateInfo.versionCode}")
-
-            if (updateInfo.versionCode > currentVersionCode) {
-                // Show high-priority system notification about the new update
-                showUpdateNotification(updateInfo)
-                Result.success(updateInfo)
-            } else {
-                Result.success(null) // Up to date
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error checking for updates from GitHub", e)
-            Result.failure(e)
-        }
-    }
-
-    /**
-     * Converts a github.com repository URL to GitHub Releases API URL
-     */
-    private fun normalizeGitHubUrl(inputUrl: String): String {
-        return when {
-            inputUrl.contains("api.github.com") || inputUrl.contains("raw.githubusercontent.com") || inputUrl.endsWith(".json") -> {
-                inputUrl
-            }
-            inputUrl.contains("github.com/") -> {
-                // E.g. https://github.com/username/repo -> https://api.github.com/repos/username/repo/releases/latest
-                val path = inputUrl.substringAfter("github.com/").trimEnd('/')
+            // If user enters standard repo url like https://github.com/hquan01/Auto-TLBB
+            val candidateUrls = if (trimmedUrl.contains("github.com/") && !trimmedUrl.contains("api.github.com") && !trimmedUrl.endsWith(".json")) {
+                val path = trimmedUrl.substringAfter("github.com/").trimEnd('/')
                 val parts = path.split('/')
                 if (parts.size >= 2) {
                     val owner = parts[0]
                     val repo = parts[1]
-                    "https://api.github.com/repos/$owner/$repo/releases/latest"
+                    listOf(
+                        "https://raw.githubusercontent.com/$owner/$repo/main/version.json",
+                        "https://raw.githubusercontent.com/$owner/$repo/master/version.json",
+                        "https://api.github.com/repos/$owner/$repo/releases/latest"
+                    )
                 } else {
-                    inputUrl
+                    listOf(trimmedUrl)
+                }
+            } else {
+                listOf(trimmedUrl)
+            }
+
+            var lastError: Exception? = null
+            for (targetUrl in candidateUrls) {
+                try {
+                    val url = URL(targetUrl)
+                    val connection = (url.openConnection() as HttpURLConnection).apply {
+                        connectTimeout = 10000
+                        readTimeout = 10000
+                        requestMethod = "GET"
+                        setRequestProperty("Accept", "application/vnd.github.v3+json, application/json, text/plain")
+                        setRequestProperty("User-Agent", "AutoClicker-AppUpdate")
+                    }
+
+                    val responseCode = connection.responseCode
+                    if (responseCode == HttpURLConnection.HTTP_OK) {
+                        val jsonString = connection.inputStream.bufferedReader().use { it.readText() }
+                        val updateInfo = parseUpdateResponse(jsonString)
+
+                        val currentVersionCode = getCurrentAppVersionCode()
+                        Log.d(TAG, "Current Version: $currentVersionCode, Remote Version: ${updateInfo.versionCode}")
+
+                        if (updateInfo.versionCode > currentVersionCode) {
+                            showUpdateNotification(updateInfo)
+                            return@withContext Result.success(updateInfo)
+                        } else {
+                            return@withContext Result.success(null) // Up to date
+                        }
+                    } else if (responseCode == HttpURLConnection.HTTP_NOT_FOUND) {
+                        lastError = Exception("Không tìm thấy file version.json hoặc Release trên GitHub (Mã 404). Hãy push file version.json lên nhánh main hoặc tạo GitHub Release.")
+                    } else {
+                        lastError = Exception("Lỗi kết nối GitHub (Mã HTTP $responseCode)")
+                    }
+                } catch (e: Exception) {
+                    lastError = e
                 }
             }
-            else -> inputUrl
+
+            Result.failure(lastError ?: Exception("Không thể kết nối đến GitHub"))
+        } catch (e: Exception) {
+            Log.e(TAG, "Error checking for updates from GitHub", e)
+            Result.failure(e)
         }
     }
 
@@ -162,7 +164,6 @@ class UpdateManager(private val context: Context) {
                 }
             }
 
-            // Fallback to first asset or zipball if no APK found
             if (apkUrl.isBlank() && assets.length() > 0) {
                 apkUrl = assets.getJSONObject(0).optString("browser_download_url", "")
             }
@@ -178,7 +179,7 @@ class UpdateManager(private val context: Context) {
         }
 
         // Case 2: Custom version.json file
-        val remoteVersionCode = json.optLong("versionCode", 0L)
+        val remoteVersionCode = json.optLong("versionCode", 1L)
         val remoteVersionName = json.optString("versionName", "1.0.0")
         val apkUrl = json.optString("apkUrl", "")
         val releaseNotes = json.optString("releaseNotes", "Bản cập nhật tính năng mới.")
@@ -228,10 +229,10 @@ class UpdateManager(private val context: Context) {
         val notification = NotificationCompat.Builder(context, UPDATE_CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle("🔔 Có bản cập nhật mới v${updateInfo.versionName}!")
-            .setContentText("Nhấn vào đây để tải và tự động cập nhật tính năng mới")
+            .setContentText(updateInfo.releaseNotes.take(60))
             .setStyle(
                 NotificationCompat.BigTextStyle()
-                    .bigText("Phiên bản v${updateInfo.versionName} đã sẵn sàng.\n\nTính năng mới:\n${updateInfo.releaseNotes}")
+                    .bigText("Phiên bản v${updateInfo.versionName} đã sẵn sàng:\n${updateInfo.releaseNotes}")
             )
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
@@ -242,110 +243,134 @@ class UpdateManager(private val context: Context) {
     }
 
     /**
-     * Downloads the APK file directly with real-time percentage progress callback
+     * Downloads the APK file from the provided URL with progress callbacks
      */
-    suspend fun downloadApkDirect(
+    suspend fun downloadApk(
         apkUrl: String,
+        targetFileName: String = "autoclicker_update.apk",
         onProgress: (Int) -> Unit
     ): Result<File> = withContext(Dispatchers.IO) {
+        if (apkUrl.isBlank()) {
+            return@withContext Result.failure(
+                IllegalArgumentException("Link tải file APK từ GitHub đang trống. Vui lòng đính kèm file APK vào GitHub Releases hoặc điền link tải 'apkUrl' trong version.json!")
+            )
+        }
+
         try {
-            if (apkUrl.isBlank()) {
-                return@withContext Result.failure(IllegalArgumentException("Link tải APK trống"))
+            val downloadDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+                ?: context.filesDir
+            if (!downloadDir.exists()) {
+                downloadDir.mkdirs()
+            }
+            val outputFile = File(downloadDir, targetFileName)
+            if (outputFile.exists()) {
+                outputFile.delete()
             }
 
             val url = URL(apkUrl)
             val connection = (url.openConnection() as HttpURLConnection).apply {
-                connectTimeout = 15000
+                connectTimeout = 20000
                 readTimeout = 30000
+                requestMethod = "GET"
                 instanceFollowRedirects = true
                 setRequestProperty("User-Agent", "AutoClicker-AppUpdate")
             }
 
-            val responseCode = connection.responseCode
-            if (responseCode != HttpURLConnection.HTTP_OK && responseCode != 302 && responseCode != 301) {
-                return@withContext Result.failure(Exception("Không thể tải file APK (Mã HTTP $responseCode)"))
+            // Handle HTTP 301/302 Redirects for GitHub Releases
+            var redirectedConnection = connection
+            var redirectCount = 0
+            while (redirectedConnection.responseCode in listOf(301, 302, 303, 307, 308) && redirectCount < 5) {
+                val newUrl = redirectedConnection.getHeaderField("Location")
+                redirectedConnection.disconnect()
+                val nextUrl = URL(newUrl)
+                redirectedConnection = (nextUrl.openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 20000
+                    readTimeout = 30000
+                    requestMethod = "GET"
+                    setRequestProperty("User-Agent", "AutoClicker-AppUpdate")
+                }
+                redirectCount++
             }
 
-            val fileLength = connection.contentLength
-            val updatesDir = File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "updates").apply {
-                mkdirs()
+            val responseCode = redirectedConnection.responseCode
+            if (responseCode != HttpURLConnection.HTTP_OK) {
+                return@withContext Result.failure(
+                    Exception("Không thể tải file APK từ GitHub (Mã HTTP: $responseCode)")
+                )
             }
-            val apkFile = File(updatesDir, "update_latest.apk")
-            if (apkFile.exists()) apkFile.delete()
 
-            connection.inputStream.use { input ->
-                FileOutputStream(apkFile).use { output ->
-                    val data = ByteArray(8192)
-                    var total: Long = 0
-                    var count: Int
-                    var lastPercent = -1
+            val fileLength = redirectedConnection.contentLength
+            val inputStream = redirectedConnection.inputStream
+            val outputStream = FileOutputStream(outputFile)
 
-                    while (input.read(data).also { count = it } != -1) {
-                        total += count
-                        if (fileLength > 0) {
-                            val percent = ((total * 100) / fileLength).toInt().coerceIn(0, 100)
-                            if (percent != lastPercent) {
-                                lastPercent = percent
-                                withContext(Dispatchers.Main) {
-                                    onProgress(percent)
-                                }
-                            }
-                        }
-                        output.write(data, 0, count)
-                    }
-                    output.flush()
+            val buffer = ByteArray(8192)
+            var totalBytesRead = 0L
+            var bytesRead: Int
+
+            while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                outputStream.write(buffer, 0, bytesRead)
+                totalBytesRead += bytesRead
+
+                if (fileLength > 0) {
+                    val progressPercent = ((totalBytesRead * 100) / fileLength).toInt()
+                    onProgress(progressPercent.coerceIn(0, 100))
                 }
             }
 
-            withContext(Dispatchers.Main) {
-                onProgress(100)
-            }
-            Result.success(apkFile)
+            outputStream.flush()
+            outputStream.close()
+            inputStream.close()
+            redirectedConnection.disconnect()
+
+            Result.success(outputFile)
         } catch (e: Exception) {
-            Log.e(TAG, "Error downloading APK", e)
+            Log.e(TAG, "Failed to download APK from $apkUrl", e)
             Result.failure(e)
         }
     }
 
     /**
-     * Triggers Android's Package Installer to install the new APK over the existing app.
-     * All existing app data and preferences are preserved seamlessly.
+     * Triggers the Android package installer for the downloaded APK file
      */
-    fun installApk(apkFile: File): Boolean {
+    fun installApk(apkFile: File) {
+        if (!apkFile.exists()) {
+            Log.e(TAG, "APK file not found at: ${apkFile.absolutePath}")
+            return
+        }
+
         try {
-            if (!apkFile.exists()) {
-                Log.e(TAG, "APK file does not exist: ${apkFile.absolutePath}")
-                return false
+            val uri: Uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.fileprovider",
+                    apkFile
+                )
+            } else {
+                Uri.fromFile(apkFile)
             }
 
-            // Check Unknown App Sources permission (Android 8.0+)
+            val installIntent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION
+            }
+
+            // Check Unknown App Install permission on Android 8.0+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 if (!context.packageManager.canRequestPackageInstalls()) {
-                    val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
-                        data = Uri.parse("package:${context.packageName}")
+                    val settingsIntent = Intent(
+                        Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.parse("package:${context.packageName}")
+                    ).apply {
                         flags = Intent.FLAG_ACTIVITY_NEW_TASK
                     }
-                    context.startActivity(intent)
-                    return false
+                    context.startActivity(settingsIntent)
+                    return
                 }
             }
 
-            val apkUri = FileProvider.getUriForFile(
-                context,
-                "${context.packageName}.fileprovider",
-                apkFile
-            )
-
-            val installIntent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(apkUri, "application/vnd.android.package-archive")
-                flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK
-            }
-
             context.startActivity(installIntent)
-            return true
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to launch package installer", e)
-            return false
+            Log.e(TAG, "Failed to start APK installation intent", e)
         }
     }
 
@@ -378,6 +403,6 @@ class UpdateManager(private val context: Context) {
         const val NOTIFICATION_ID_UPDATE = 2002
         const val EXTRA_AUTO_UPDATE = "extra_auto_update"
         const val DEFAULT_GITHUB_VERSION_URL =
-            "https://raw.githubusercontent.com/example/autoclicker/main/version.json"
+            "https://raw.githubusercontent.com/hquan01/Auto-TLBB/main/version.json"
     }
 }

@@ -78,8 +78,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // GitHub repository or version.json URL
     private val _githubUrl = MutableStateFlow(
-        prefs.getString("pref_github_url", UpdateManager.DEFAULT_GITHUB_VERSION_URL)
-            ?: UpdateManager.DEFAULT_GITHUB_VERSION_URL
+        run {
+            val saved = prefs.getString("pref_github_url", null)
+            if (saved.isNullOrBlank() || saved.contains("example/")) {
+                UpdateManager.DEFAULT_GITHUB_VERSION_URL
+            } else {
+                saved
+            }
+        }
     )
     val githubUrl: StateFlow<String> = _githubUrl.asStateFlow()
 
@@ -297,7 +303,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun downloadAndInstallUpdate(updateInfo: AppUpdateInfo) {
         viewModelScope.launch {
             _updateState.value = UpdateUiState.Downloading(0, updateInfo)
-            val downloadResult = updateManager.downloadApkDirect(updateInfo.apkUrl) { progress ->
+            val downloadResult = updateManager.downloadApk(updateInfo.apkUrl) { progress ->
                 _updateState.value = UpdateUiState.Downloading(progress, updateInfo)
             }
 
