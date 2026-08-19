@@ -28,11 +28,13 @@ jobs:
           java-version: '17'
           cache: 'gradle'
 
-      - name: Grant Execute Permission for Gradlew
-        run: chmod +x gradlew || true
-
-      - name: Build Debug APK with Gradle
+      - name: Generate Gradle Wrapper & Build APK
         run: |
+          # Generate Gradle wrapper dynamically on the runner
+          gradle wrapper --gradle-version 8.5
+          chmod +x gradlew
+          
+          # Build Debug APK
           ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Extract Version Info
@@ -76,7 +78,7 @@ jobs:
           body: |
             ## 🚀 Tự động cập nhật phiên bản mới ${{ steps.version_step.outputs.VERSION_NAME }}
             - **Commit:** ${{ github.event.head_commit.message }}
-            - **Thời gian build:** ${{ steps.version_step.outputs.DATE }}
+            - **Thời gian build:** ${{ github.event.head_commit.DATE }}
             - **Tải file APK trực tiếp bên dưới:**
           files: |
             release_apk/Auto-TLBB.apk
